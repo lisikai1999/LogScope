@@ -158,7 +158,6 @@ class DockerService:
                     
                     timestamp_str = parts[0]
                     message = parts[1]
-                    
                     # 解析时间戳
                     try:
                         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()

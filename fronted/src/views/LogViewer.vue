@@ -248,7 +248,7 @@ const fetchLogs = async () => {
       params.tail = tailCount.value
     }
     // 如果没有设置tail条件，默认获取最后 100 行
-    if (!tailCount.value) {
+    if (!sinceTime.value && !untilTime.value && !tailCount.value) {
       params.tail = 100
     }
 
