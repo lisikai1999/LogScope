@@ -10,7 +10,7 @@
             </svg>
             <div>
               <h1>Docker 日志查看器</h1>
-              <p>仿照 Dozzle 的日志查看工具</p>
+              <p>日志查看工具</p>
             </div>
           </div>
           <button class="btn btn-outline" @click="fetchContainers">
