@@ -1,0 +1,16 @@
+[project]
+requires = ["nodejs-24", "python-311"]
+
+[dev]
+build = [
+  "bash", "-c",
+  "cd backend && pip install -r requirements.txt -q && cd ../frontend && npm install"
+]
+run = ["bash", "start.sh"]
+
+[deploy]
+build = [
+  "bash", "-c",
+  "cd backend && pip install -r requirements.txt && cd ../frontend && npm install && npm run build"
+]
+run = ["bash", "-c", "cd backend && python main.py"]
