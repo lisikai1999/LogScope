@@ -5,7 +5,10 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 
-os.environ["DOCKER_HOST"] = "tcp://192.168.220.129:2375"
+DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock"
+
+if not os.environ.get("DOCKER_HOST"):
+    os.environ["DOCKER_HOST"] = DEFAULT_DOCKER_HOST
 
 
 class DockerService:
