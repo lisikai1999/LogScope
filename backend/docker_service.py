@@ -5,9 +5,6 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 
-os.environ["DOCKER_HOST"] = "tcp://192.168.220.129:2375"
-
-
 class DockerService:
     def __init__(self):
         self.docker_available = self._check_docker_available()
