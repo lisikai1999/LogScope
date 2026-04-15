@@ -148,17 +148,32 @@
           </div>
 
           <!-- Logs Display -->
-          <div class="logs-container">
-            <div v-if="loading" class="loading">
+          <div 
+            class="logs-container" 
+            ref="logsContainerRef"
+            @scroll="handleScroll"
+          >
+            <!-- Loading more indicator at top (for older logs) -->
+            <div v-if="loadingMore" class="loading-more">
+              <div class="loading-spinner"></div>
+              <span>加载更多日志...</span>
+            </div>
+            
+            <!-- No more logs indicator -->
+            <div v-if="!hasMore && logs.length > 0 && !loadingMore" class="no-more-logs">
+              没有更多日志了
+            </div>
+
+            <div v-if="loading && logs.length === 0" class="loading">
               <div v-for="i in 10" :key="i" class="skeleton"></div>
             </div>
-            <div v-else-if="filteredLogs.length === 0" class="empty-state">
+            <div v-else-if="filteredLogs.length === 0 && !loading" class="empty-state">
               没有找到日志
             </div>
             <div v-else class="logs-list">
               <div
                 v-for="(log, index) in filteredLogs"
-                :key="index"
+                :key="`${log.timestamp}-${index}`"
                 class="log-entry"
                 :class="`log-${log.stream}`"
               >
@@ -173,9 +188,14 @@
                 </div>
               </div>
             </div>
-            <div class="logs-footer">
-              共 {{ filteredLogs.length }} 条日志
-            </div>
+          </div>
+          
+          <!-- Logs Footer -->
+          <div class="logs-footer">
+            <span>共 {{ filteredLogs.length }} 条日志</span>
+            <span v-if="hasMore" class="has-more-indicator">
+              (还有更多历史日志，向上滚动加载)
+            </span>
           </div>
         </div>
       </div>
@@ -184,7 +204,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
 
@@ -194,9 +214,13 @@ const containerId = ref(route.params.id)
 const containerInfo = ref(null)
 const logs = ref([])
 const loading = ref(true)
+const loadingMore = ref(false)
 const error = ref(null)
+const hasMore = ref(true)
+const logsContainerRef = ref(null)
 
-// 筛选条件
+const PAGE_SIZE = 1000
+
 const sinceTime = ref('')
 const untilTime = ref('')
 const tailCount = ref(null)
@@ -204,10 +228,10 @@ const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
 
-// 追踪最后一条日志的时间戳，用于增量查询
 let lastLogTimestamp = 0
-
+let firstLogTimestamp = 0
 let refreshInterval = null
+let isScrolling = false
 
 const filteredLogs = computed(() => {
   return logs.value.filter(log => {
@@ -233,11 +257,12 @@ const fetchLogs = async () => {
     loading.value = true
     logs.value = []
     lastLogTimestamp = 0
+    firstLogTimestamp = 0
     error.value = null
+    hasMore.value = true
 
     const params = {}
 
-    // 转换时间戳
     if (sinceTime.value) {
       params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
     }
@@ -247,9 +272,9 @@ const fetchLogs = async () => {
     if (tailCount.value) {
       params.tail = tailCount.value
     }
-    // 如果没有设置tail条件，默认获取最后 100 行
+    
     if (!sinceTime.value && !untilTime.value && !tailCount.value) {
-      params.tail = 100
+      params.limit = PAGE_SIZE
     }
 
     console.log('Manual query params:', params)
@@ -263,7 +288,12 @@ const fetchLogs = async () => {
       logs.value = response.data.data
       if (logs.value.length > 0) {
         lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
+        firstLogTimestamp = logs.value[0].timestamp
       }
+      hasMore.value = response.data.has_more !== false
+      
+      await nextTick()
+      scrollToBottom()
     } else {
       error.value = response.data.error || '获取日志失败'
     }
@@ -271,6 +301,63 @@ const fetchLogs = async () => {
     error.value = err.message || '获取日志失败'
   } finally {
     loading.value = false
+  }
+}
+
+const fetchMoreLogs = async () => {
+  if (loadingMore.value || !hasMore.value || firstLogTimestamp === 0) {
+    return
+  }
+
+  try {
+    loadingMore.value = true
+
+    const params = {
+      limit: PAGE_SIZE,
+      before: firstLogTimestamp
+    }
+
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
+
+    const response = await axios.get(
+      `/api/containers/${containerId.value}/logs`,
+      { params }
+    )
+
+    if (response.data.success) {
+      const olderLogs = response.data.data
+      
+      if (olderLogs.length > 0) {
+        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+        const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+        
+        if (uniqueLogs.length > 0) {
+          const scrollTopBefore = logsContainerRef.value?.scrollTop || 0
+          const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
+          
+          logs.value = [...uniqueLogs, ...logs.value]
+          firstLogTimestamp = uniqueLogs[0].timestamp
+          
+          await nextTick()
+          
+          if (logsContainerRef.value) {
+            const scrollHeightAfter = logsContainerRef.value.scrollHeight
+            const heightDiff = scrollHeightAfter - scrollHeightBefore
+            logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
+          }
+        }
+        
+        hasMore.value = response.data.has_more !== false && uniqueLogs.length === PAGE_SIZE
+      } else {
+        hasMore.value = false
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching more logs:', err)
+  } finally {
+    loadingMore.value = false
   }
 }
 
@@ -289,17 +376,45 @@ const fetchLogsAuto = async () => {
       const newLogs = response.data.data
       
       if (logs.value.length > 0) {
-        // 增量追加（避免重复）
         const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
         const uniqueLogs = newLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
         if (uniqueLogs.length > 0) {
+          const container = logsContainerRef.value
+          const isAtBottom = container 
+            ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+            : false
+          
           logs.value.push(...uniqueLogs)
           lastLogTimestamp = uniqueLogs[uniqueLogs.length - 1].timestamp
+          
+          if (isAtBottom) {
+            await nextTick()
+            scrollToBottom()
+          }
         }
       }
     }
   } catch (err) {
     console.error('Auto-refresh error:', err)
+  }
+}
+
+const handleScroll = () => {
+  if (!logsContainerRef.value || loadingMore.value || !hasMore.value) {
+    return
+  }
+  
+  const container = logsContainerRef.value
+  const scrollTop = container.scrollTop
+  
+  if (scrollTop < 100) {
+    fetchMoreLogs()
+  }
+}
+
+const scrollToBottom = () => {
+  if (logsContainerRef.value) {
+    logsContainerRef.value.scrollTop = logsContainerRef.value.scrollHeight
   }
 }
 
@@ -342,7 +457,7 @@ const setTimeRange = (range) => {
   }
 
   tailCount.value = null
-  fetchLogs(false)
+  fetchLogs()
 }
 
 const formatDateTimeLocal = (date) => {
@@ -363,11 +478,10 @@ const clearFilters = () => {
   fetchLogs()
 }
 
-// 自动刷新
 watch(autoRefresh, (newValue) => {
   if (newValue) {
     refreshInterval = setInterval(() => {
-      fetchLogsAuto()  // 调用自动刷新函数
+      fetchLogsAuto()
     }, 1000)
   } else {
     if (refreshInterval) {
@@ -629,6 +743,40 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
+.loading-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  color: #888;
+  font-size: 0.875rem;
+  background-color: #252525;
+}
+
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #3d3d3d;
+  border-top-color: var(--primary-color);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.no-more-logs {
+  text-align: center;
+  padding: 0.75rem;
+  color: #666;
+  font-size: 0.75rem;
+  background-color: #252525;
+}
+
 .loading {
   padding: 1rem;
 }
@@ -702,11 +850,17 @@ onUnmounted(() => {
   background-color: #2d2d2d;
   color: #888;
   font-size: 0.875rem;
-  text-align: right;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   border-top: 1px solid #3d3d3d;
 }
 
-/* 滚动条样式 */
+.has-more-indicator {
+  color: var(--primary-color);
+  font-size: 0.75rem;
+}
+
 .logs-container::-webkit-scrollbar {
   width: 8px;
 }

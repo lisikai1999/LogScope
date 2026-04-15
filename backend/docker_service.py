@@ -104,17 +104,17 @@ class DockerService:
         container_id: str,
         since: Optional[int] = None,
         until: Optional[int] = None,
-        tail: Optional[int] = None
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        before: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """获取容器日志（支持时间筛选）"""
+        """获取容器日志（支持时间筛选和分页）"""
         if not self.docker_available:
-            # 返回模拟数据
-            return self._get_mock_logs(container_id, since, until, tail)
+            return self._get_mock_logs(container_id, since, until, tail, limit, before)
         
         try:
             container = self.client.containers.get(container_id)
             
-            # 构建日志选项
             options = {
                 'stdout': True,
                 'stderr': True,
@@ -128,32 +128,23 @@ class DockerService:
             if tail:
                 options['tail'] = tail
             
-            
-            # 获取日志
             logs = container.logs(**options)
-            
             log_string = logs.decode('utf-8')
             
-
-            # 解析日志
             entries = []
             lines = log_string.split('\n')
             
-
             for line in lines:
                 line = line.strip()
                 if not line:
                     continue
                 
                 try:
-                    # Docker 日志格式解析
                     if len(line) <= 8:
                         continue
                     
                     content = line[0:]  
                     
-
-                    # 解析时间戳和消息
                     parts = content.split(' ', 1)
                     
                     if len(parts) < 2:
@@ -161,14 +152,12 @@ class DockerService:
                     
                     timestamp_str = parts[0]
                     message = parts[1]
-                    # 解析时间戳
                     try:
                         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
                     except:
                         print("断点1====>时间戳解析异常:", timestamp_str)
                         continue
                     
-                    # 判断流类型（从 header 的第一个字节）
                     header = line[:8]
                     stream_type = 'stderr' if ord(header[0]) == 1 else 'stdout'
                     entries.append({
@@ -180,6 +169,12 @@ class DockerService:
                     print(f"Error parsing log line: {e}")
                     continue
             
+            if before:
+                entries = [log for log in entries if log['timestamp'] < before]
+            
+            if limit:
+                entries = entries[-limit:]
+            
             return entries
         except Exception as e:
             print(f"Error getting logs: {e}")
@@ -190,10 +185,12 @@ class DockerService:
         container_id: str,
         since: Optional[int] = None,
         until: Optional[int] = None,
-        tail: Optional[int] = None
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        before: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """返回模拟的日志数据（用于演示）"""
-        base_time = time.time() - 3600  # 1小时前
+        base_time = time.time() - 3600
         
         logs = [
             {
@@ -283,14 +280,17 @@ class DockerService:
             }
         ]
         
-        # 应用时间筛选
         filtered_logs = logs
         if since:
             filtered_logs = [log for log in filtered_logs if log['timestamp'] >= since]
         if until:
             filtered_logs = [log for log in filtered_logs if log['timestamp'] <= until]
+        if before:
+            filtered_logs = [log for log in filtered_logs if log['timestamp'] < before]
         if tail:
             filtered_logs = filtered_logs[-tail:]
+        if limit:
+            filtered_logs = filtered_logs[-limit:]
         
         return filtered_logs
     

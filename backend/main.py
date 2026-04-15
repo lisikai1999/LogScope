@@ -40,20 +40,25 @@ async def get_container_logs(
     container_id: str,
     since: Optional[int] = Query(None, description="起始时间戳（Unix 时间戳，秒）"),
     until: Optional[int] = Query(None, description="结束时间戳（Unix 时间戳，秒）"),
-    tail: Optional[int] = Query(None, description="返回最后 N 行日志")
+    tail: Optional[int] = Query(None, description="返回最后 N 行日志"),
+    limit: Optional[int] = Query(None, description="每页返回的日志数量"),
+    before: Optional[int] = Query(None, description="获取指定时间戳之前的日志（用于分页加载更早的日志）")
 ):
-    """获取容器日志（支持时间筛选）"""
+    """获取容器日志（支持时间筛选和分页）"""
     try:
-        print("获取日志参数:", since, until, tail)
+        print("获取日志参数:", since, until, tail, limit, before)
         logs = docker_service.get_container_logs(
             container_id=container_id,
             since=since,
             until=until,
-            tail=tail
+            tail=tail,
+            limit=limit,
+            before=before
         )
         return {
             "success": True,
-            "data": logs
+            "data": logs,
+            "has_more": len(logs) == (limit or 1000) if limit else False
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
