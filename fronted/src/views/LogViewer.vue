@@ -210,7 +210,10 @@
           <!-- Logs Footer -->
           <div class="logs-footer">
             <span>共 {{ filteredLogs.length }} 条日志</span>
-            <span v-if="hasOlder" class="has-more-indicator">
+            <span v-if="hasNewer" class="has-more-indicator">
+              (向下滚动加载更新的日志)
+            </span>
+            <span v-else-if="hasOlder" class="has-more-indicator">
               (向上滚动加载更早的日志)
             </span>
             <span v-else-if="autoRefresh" class="auto-refresh-indicator">
@@ -238,6 +241,7 @@ const loadingOlder = ref(false)
 const loadingNewer = ref(false)
 const error = ref(null)
 const hasOlder = ref(true)
+const hasNewer = ref(false)
 const logsContainerRef = ref(null)
 const loadOlderTrigger = ref(null)
 const loadNewerTrigger = ref(null)
@@ -252,8 +256,8 @@ const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
 
-let lastLogTimestamp = 0
-let firstLogTimestamp = 0
+let currentNextToken = null
+let currentPrevToken = null
 let refreshInterval = null
 let olderObserver = null
 let newerObserver = null
@@ -282,10 +286,11 @@ const fetchLogs = async () => {
   try {
     loading.value = true
     logs.value = []
-    lastLogTimestamp = 0
-    firstLogTimestamp = 0
+    currentNextToken = null
+    currentPrevToken = null
     error.value = null
     hasOlder.value = true
+    hasNewer.value = false
     retryCount = 0
 
     const params = {}
@@ -300,7 +305,12 @@ const fetchLogs = async () => {
       params.tail = tailCount.value
     }
     
-    if (!sinceTime.value && !untilTime.value && !tailCount.value) {
+    const useNewPagination = sinceTime.value || untilTime.value
+    
+    if (useNewPagination) {
+      params.start_from_head = true
+      params.limit = PAGE_SIZE
+    } else if (!tailCount.value) {
       params.tail = PAGE_SIZE
     }
 
@@ -313,19 +323,23 @@ const fetchLogs = async () => {
 
     if (response.data.success) {
       logs.value = response.data.data
-      if (logs.value.length > 0) {
-        lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
-        firstLogTimestamp = logs.value[0].timestamp
-      }
       
-      if (params.tail || params.limit) {
-        hasOlder.value = response.data.has_more !== false
+      if (useNewPagination) {
+        currentNextToken = response.data.next_token || null
+        currentPrevToken = response.data.prev_token || null
+        hasNewer.value = response.data.has_more_forward === true
+        hasOlder.value = response.data.has_more_backward === true
       } else {
-        hasOlder.value = false
+        if (params.tail || params.limit) {
+          hasOlder.value = response.data.has_more !== false
+        } else {
+          hasOlder.value = false
+        }
+        hasNewer.value = false
       }
       
       await nextTick()
-      scrollToBottom()
+      scrollToTop()
       
       retryCount = 0
     } else {
@@ -340,21 +354,90 @@ const fetchLogs = async () => {
 }
 
 const fetchOlderLogs = async () => {
-  if (loadingOlder.value || !hasOlder.value || firstLogTimestamp === 0) {
+  if (loadingOlder.value || !hasOlder.value) {
+    return
+  }
+
+  const useNewPagination = currentPrevToken !== null || sinceTime.value || untilTime.value
+  
+  if (!useNewPagination) {
+    const firstLogTimestamp = logs.value.length > 0 ? logs.value[0].timestamp : 0
+    if (firstLogTimestamp === 0) return
+    
+    try {
+      loadingOlder.value = true
+
+      const params = {}
+      
+      if (sinceTime.value) {
+        params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+      }
+      
+      params.until = firstLogTimestamp
+      params.tail = PAGE_SIZE
+
+      console.log('Fetch older logs (legacy) params:', params)
+
+      const response = await axios.get(
+        `/api/containers/${containerId.value}/logs`,
+        { params }
+      )
+
+      if (response.data.success) {
+        const olderLogs = response.data.data
+        
+        if (olderLogs.length > 0) {
+          const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+          const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+          
+          if (uniqueLogs.length > 0) {
+            const scrollTopBefore = logsContainerRef.value?.scrollTop || 0
+            const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
+            
+            logs.value = [...uniqueLogs, ...logs.value]
+            
+            await nextTick()
+            
+            if (logsContainerRef.value) {
+              const scrollHeightAfter = logsContainerRef.value.scrollHeight
+              const heightDiff = scrollHeightAfter - scrollHeightBefore
+              logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
+            }
+          }
+          
+          hasOlder.value = response.data.has_more !== false && uniqueLogs.length > 0
+        } else {
+          hasOlder.value = false
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching older logs:', err)
+    } finally {
+      loadingOlder.value = false
+    }
+    return
+  }
+
+  if (!currentPrevToken) {
+    hasOlder.value = false
     return
   }
 
   try {
     loadingOlder.value = true
 
-    const params = {}
+    const params = {
+      next_token: currentPrevToken,
+      direction: 'backward',
+      limit: PAGE_SIZE
+    }
     
     if (sinceTime.value) {
       params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
     }
-    
-    params.until = firstLogTimestamp
-    params.tail = PAGE_SIZE
+    if (untilTime.value) {
+      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
 
     console.log('Fetch older logs params:', params)
 
@@ -375,7 +458,12 @@ const fetchOlderLogs = async () => {
           const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
           
           logs.value = [...uniqueLogs, ...logs.value]
-          firstLogTimestamp = uniqueLogs[0].timestamp
+          
+          currentPrevToken = response.data.prev_token || null
+          currentNextToken = response.data.next_token || null
+          
+          hasOlder.value = response.data.has_more_backward === true
+          hasNewer.value = response.data.has_more_forward === true || hasNewer.value
           
           await nextTick()
           
@@ -385,8 +473,6 @@ const fetchOlderLogs = async () => {
             logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
           }
         }
-        
-        hasOlder.value = response.data.has_more !== false && uniqueLogs.length > 0
       } else {
         hasOlder.value = false
       }
@@ -399,7 +485,64 @@ const fetchOlderLogs = async () => {
 }
 
 const fetchNewerLogs = async () => {
-  if (loadingNewer.value || lastLogTimestamp === 0) {
+  if (loadingNewer.value) {
+    return
+  }
+
+  const useNewPagination = currentNextToken !== null || sinceTime.value || untilTime.value
+  
+  if (!useNewPagination) {
+    const lastLogTimestamp = logs.value.length > 0 ? logs.value[logs.value.length - 1].timestamp : 0
+    if (lastLogTimestamp === 0) return
+    
+    try {
+      loadingNewer.value = true
+
+      const params = {
+        since: lastLogTimestamp
+      }
+
+      if (untilTime.value) {
+        params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+      }
+
+      const response = await axios.get(
+        `/api/containers/${containerId.value}/logs`,
+        { params }
+      )
+
+      if (response.data.success) {
+        const newerLogs = response.data.data
+        
+        if (newerLogs.length > 0) {
+          const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+          const uniqueLogs = newerLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+          
+          if (uniqueLogs.length > 0) {
+            const container = logsContainerRef.value
+            const isAtBottom = container 
+              ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+              : false
+            
+            logs.value = [...logs.value, ...uniqueLogs]
+            
+            if (isAtBottom) {
+              await nextTick()
+              scrollToBottom()
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching newer logs:', err)
+    } finally {
+      loadingNewer.value = false
+    }
+    return
+  }
+
+  if (!currentNextToken) {
+    hasNewer.value = false
     return
   }
 
@@ -407,12 +550,19 @@ const fetchNewerLogs = async () => {
     loadingNewer.value = true
 
     const params = {
-      since: lastLogTimestamp
+      next_token: currentNextToken,
+      direction: 'forward',
+      limit: PAGE_SIZE
     }
-
+    
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
     }
+
+    console.log('Fetch newer logs params:', params)
 
     const response = await axios.get(
       `/api/containers/${containerId.value}/logs`,
@@ -433,13 +583,20 @@ const fetchNewerLogs = async () => {
             : false
           
           logs.value = [...logs.value, ...uniqueLogs]
-          lastLogTimestamp = uniqueLogs[uniqueLogs.length - 1].timestamp
+          
+          currentNextToken = response.data.next_token || null
+          currentPrevToken = response.data.prev_token || null
+          
+          hasNewer.value = response.data.has_more_forward === true
+          hasOlder.value = response.data.has_more_backward === true || hasOlder.value
           
           if (isAtBottom) {
             await nextTick()
             scrollToBottom()
           }
         }
+      } else {
+        hasNewer.value = false
       }
     }
   } catch (err) {
@@ -451,7 +608,9 @@ const fetchNewerLogs = async () => {
 
 const fetchLogsAuto = async () => {
   try {
-    if (lastLogTimestamp === 0) return
+    if (logs.value.length === 0) return
+    
+    const lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
     
     const params = { since: lastLogTimestamp }
 
@@ -473,7 +632,6 @@ const fetchLogsAuto = async () => {
             : false
           
           logs.value.push(...uniqueLogs)
-          lastLogTimestamp = uniqueLogs[uniqueLogs.length - 1].timestamp
           
           if (isAtBottom) {
             await nextTick()
@@ -544,6 +702,12 @@ const setupObservers = () => {
 const scrollToBottom = () => {
   if (logsContainerRef.value) {
     logsContainerRef.value.scrollTop = logsContainerRef.value.scrollHeight
+  }
+}
+
+const scrollToTop = () => {
+  if (logsContainerRef.value) {
+    logsContainerRef.value.scrollTop = 0
   }
 }
 
@@ -620,7 +784,7 @@ watch(autoRefresh, (newValue) => {
   }
 })
 
-watch([logs, hasOlder], () => {
+watch([logs, hasOlder, hasNewer], () => {
   nextTick(() => {
     setupObservers()
   })

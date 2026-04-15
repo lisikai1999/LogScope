@@ -181,6 +181,203 @@ class DockerService:
             print(f"Error getting logs: {e}")
             raise e
     
+    def get_container_logs_paginated(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        start_from_head: bool = False,
+        next_token: Optional[str] = None,
+        direction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """获取容器日志（支持 CloudWatch 风格的分页）
+        
+        分页机制：
+        - start_from_head=True: 从时间范围的开头（最老的日志）开始加载
+        - next_token: 分页令牌，格式为 "timestamp:index"
+        - direction: 
+          - 'forward': 加载更新的日志（向后翻页）
+          - 'backward': 加载更早的日志（向前翻页）
+        
+        返回：
+        - logs: 当前页的日志列表
+        - next_token: 下一页的令牌（用于加载更新的日志）
+        - prev_token: 上一页的令牌（用于加载更早的日志）
+        """
+        if not self.docker_available:
+            return self._get_mock_logs_paginated(
+                container_id, since, until, tail, limit, 
+                start_from_head, next_token, direction
+            )
+        
+        try:
+            effective_limit = limit or tail or 1000
+            
+            all_logs = self.get_container_logs(
+                container_id=container_id,
+                since=since,
+                until=until,
+                tail=None,
+                limit=None
+            )
+            
+            all_logs.sort(key=lambda x: x['timestamp'])
+            
+            return self._paginate_logs(
+                all_logs, effective_limit, start_from_head, next_token, direction
+            )
+        except Exception as e:
+            print(f"Error getting paginated logs: {e}")
+            raise e
+    
+    def _paginate_logs(
+        self,
+        all_logs: List[Dict[str, Any]],
+        limit: int,
+        start_from_head: bool,
+        next_token: Optional[str],
+        direction: Optional[str]
+    ) -> Dict[str, Any]:
+        """对日志列表进行分页处理"""
+        if not all_logs:
+            return {
+                'logs': [],
+                'next_token': None,
+                'prev_token': None
+            }
+        
+        total_count = len(all_logs)
+        
+        token_timestamp = None
+        token_index = 0
+        
+        if next_token:
+            try:
+                parts = next_token.split(':')
+                token_timestamp = int(parts[0])
+                if len(parts) > 1:
+                    token_index = int(parts[1])
+            except (ValueError, IndexError):
+                token_timestamp = None
+                token_index = 0
+        
+        start_index = 0
+        
+        if next_token and token_timestamp is not None:
+            if direction == 'backward':
+                for i in range(total_count):
+                    if all_logs[i]['timestamp'] >= token_timestamp:
+                        start_index = max(0, i - limit)
+                        break
+                else:
+                    start_index = max(0, total_count - limit)
+            else:
+                found = False
+                for i in range(total_count):
+                    if all_logs[i]['timestamp'] > token_timestamp:
+                        start_index = i
+                        found = True
+                        break
+                    elif all_logs[i]['timestamp'] == token_timestamp:
+                        if i > token_index:
+                            start_index = i
+                            found = True
+                            break
+                if not found:
+                    start_index = total_count
+        elif start_from_head:
+            start_index = 0
+        else:
+            start_index = max(0, total_count - limit)
+        
+        end_index = min(start_index + limit, total_count)
+        page_logs = all_logs[start_index:end_index]
+        
+        next_token_response = None
+        prev_token_response = None
+        
+        if end_index < total_count and page_logs:
+            last_log = page_logs[-1]
+            last_index_in_page = len(page_logs) - 1
+            next_token_response = f"{last_log['timestamp']}:{start_index + last_index_in_page}"
+        
+        if start_index > 0 and page_logs:
+            first_log = page_logs[0]
+            prev_token_response = f"{first_log['timestamp']}:{start_index}"
+        
+        return {
+            'logs': page_logs,
+            'next_token': next_token_response,
+            'prev_token': prev_token_response
+        }
+    
+    def _generate_mock_logs(self, count: int = 2500) -> List[Dict[str, Any]]:
+        """生成大量模拟日志数据（用于测试分页）"""
+        base_time = int(time.time()) - 3600
+        logs = []
+        
+        log_messages = [
+            '[INFO] Application starting...',
+            '[INFO] Loading configuration from /etc/config.yaml',
+            '[DEBUG] Connecting to database at db.example.com:5432',
+            '[INFO] Database connection established',
+            '[INFO] Redis cache connected: redis://cache:6379',
+            '[INFO] Initializing worker pool with 8 workers',
+            '[INFO] Worker pool ready',
+            '[INFO] Starting HTTP server on port 8080',
+            '[INFO] Server started successfully',
+            '[INFO] Request received: GET /api/health',
+            '[DEBUG] Health check: all services OK',
+            '[INFO] Response sent: 200 OK (1ms)',
+            '[INFO] Request received: GET /api/users',
+            '[DEBUG] Querying database for users',
+            '[INFO] Response sent: 200 OK (45ms)',
+            '[INFO] Request received: POST /api/auth/login',
+            '[DEBUG] Authenticating user credentials',
+            '[INFO] User authenticated: user@example.com',
+            '[INFO] Response sent: 200 OK (120ms)',
+            '[WARN] Rate limit warning: IP 192.168.1.100',
+            '[INFO] Request received: GET /api/data',
+            '[DEBUG] Fetching data from cache',
+            '[INFO] Response sent: 200 OK (5ms)',
+            '[ERROR] Failed to connect to external API',
+            '[DEBUG] Retrying connection (attempt 1/3)',
+            '[INFO] External API connection restored',
+            '[INFO] Request received: PUT /api/settings',
+            '[DEBUG] Updating user settings',
+            '[INFO] Response sent: 200 OK (30ms)',
+            '[INFO] Scheduled task: cleanup expired sessions',
+            '[DEBUG] Cleaned up 15 expired sessions',
+            '[INFO] Request received: DELETE /api/cache',
+            '[DEBUG] Clearing cache entries',
+            '[INFO] Response sent: 204 No Content',
+            '[INFO] Request received: GET /api/reports',
+            '[DEBUG] Generating monthly report',
+            '[INFO] Response sent: 200 OK (500ms)',
+            '[WARN] High memory usage detected: 85%',
+            '[DEBUG] Running garbage collection',
+            '[INFO] Memory usage normalized: 45%',
+            '[INFO] Request received: POST /api/upload',
+            '[DEBUG] Processing file upload',
+            '[INFO] File uploaded successfully: report.pdf',
+            '[INFO] Response sent: 201 Created',
+        ]
+        
+        for i in range(count):
+            timestamp = base_time + i
+            message_index = i % len(log_messages)
+            stream = 'stderr' if 'ERROR' in log_messages[message_index] or 'WARN' in log_messages[message_index] else 'stdout'
+            
+            logs.append({
+                'timestamp': timestamp,
+                'stream': stream,
+                'message': f"{log_messages[message_index]} (log #{i})"
+            })
+        
+        return logs
+    
     def _get_mock_logs(
         self,
         container_id: str,
@@ -191,95 +388,7 @@ class DockerService:
         before: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """返回模拟的日志数据（用于演示）"""
-        base_time = time.time() - 3600
-        
-        logs = [
-            {
-                'timestamp': int(base_time - 1800),
-                'stream': 'stdout',
-                'message': 'Starting application server...'
-            },
-            {
-                'timestamp': int(base_time - 1750),
-                'stream': 'stdout',
-                'message': 'Database connection established'
-            },
-            {
-                'timestamp': int(base_time - 1700),
-                'stream': 'stdout',
-                'message': 'Redis cache initialized'
-            },
-            {
-                'timestamp': int(base_time - 1650),
-                'stream': 'stdout',
-                'message': 'Server listening on port 8080'
-            },
-            {
-                'timestamp': int(base_time - 1600),
-                'stream': 'stdout',
-                'message': 'Application started successfully'
-            },
-            {
-                'timestamp': int(base_time - 1200),
-                'stream': 'stdout',
-                'message': '[INFO] Request received: GET /api/health'
-            },
-            {
-                'timestamp': int(base_time - 1195),
-                'stream': 'stdout',
-                'message': '[INFO] Response sent: 200 OK'
-            },
-            {
-                'timestamp': int(base_time - 900),
-                'stream': 'stdout',
-                'message': '[INFO] Request received: GET /api/users'
-            },
-            {
-                'timestamp': int(base_time - 895),
-                'stream': 'stderr',
-                'message': '[WARN] Slow query detected: SELECT * FROM users (2.5s)'
-            },
-            {
-                'timestamp': int(base_time - 890),
-                'stream': 'stdout',
-                'message': '[INFO] Response sent: 200 OK'
-            },
-            {
-                'timestamp': int(base_time - 600),
-                'stream': 'stdout',
-                'message': '[INFO] Request received: POST /api/auth/login'
-            },
-            {
-                'timestamp': int(base_time - 595),
-                'stream': 'stdout',
-                'message': '[INFO] User authenticated successfully'
-            },
-            {
-                'timestamp': int(base_time - 590),
-                'stream': 'stdout',
-                'message': '[INFO] Response sent: 200 OK'
-            },
-            {
-                'timestamp': int(base_time - 300),
-                'stream': 'stdout',
-                'message': '[INFO] Request received: GET /api/data'
-            },
-            {
-                'timestamp': int(base_time - 295),
-                'stream': 'stdout',
-                'message': '[INFO] Response sent: 200 OK'
-            },
-            {
-                'timestamp': int(base_time - 60),
-                'stream': 'stdout',
-                'message': '[INFO] Health check passed'
-            },
-            {
-                'timestamp': int(base_time),
-                'stream': 'stdout',
-                'message': '[INFO] Server running normally'
-            }
-        ]
+        logs = self._generate_mock_logs(2500)
         
         filtered_logs = logs
         if since:
@@ -294,6 +403,33 @@ class DockerService:
             filtered_logs = filtered_logs[-limit:]
         
         return filtered_logs
+    
+    def _get_mock_logs_paginated(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        start_from_head: bool = False,
+        next_token: Optional[str] = None,
+        direction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """返回模拟的分页日志数据"""
+        effective_limit = limit or tail or 1000
+        
+        all_logs = self._generate_mock_logs(2500)
+        
+        if since:
+            all_logs = [log for log in all_logs if log['timestamp'] >= since]
+        if until:
+            all_logs = [log for log in all_logs if log['timestamp'] <= until]
+        
+        all_logs.sort(key=lambda x: x['timestamp'])
+        
+        return self._paginate_logs(
+            all_logs, effective_limit, start_from_head, next_token, direction
+        )
     
     def get_container_info(self, container_id: str) -> Dict[str, Any]:
         """获取容器详情"""

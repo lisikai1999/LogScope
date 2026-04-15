@@ -40,32 +40,49 @@ async def get_container_logs(
     container_id: str,
     since: Optional[int] = Query(None, description="起始时间戳（Unix 时间戳，秒）"),
     until: Optional[int] = Query(None, description="结束时间戳（Unix 时间戳，秒）"),
-    tail: Optional[int] = Query(None, description="返回最后 N 行日志"),
+    tail: Optional[int] = Query(None, description="返回最后 N 行日志（传统模式）"),
     limit: Optional[int] = Query(None, description="每页返回的日志数量"),
-    before: Optional[int] = Query(None, description="获取指定时间戳之前的日志（用于分页加载更早的日志）")
+    start_from_head: bool = Query(False, description="是否从时间范围开头（最老的日志）开始加载"),
+    next_token: Optional[str] = Query(None, description="分页令牌，用于加载下一页"),
+    direction: Optional[str] = Query(None, description="分页方向：forward（向后/更新）或 backward（向前/更早）")
 ):
-    """获取容器日志（支持时间筛选和分页）"""
+    """获取容器日志（支持时间筛选和分页）
+    
+    分页机制说明（参考 AWS CloudWatch）：
+    - 当 start_from_head=True 时，从时间范围的开头（最老的日志）开始加载
+    - 使用 next_token 进行分页，返回的 next_token 用于获取下一页
+    - direction: forward 加载更新的日志，backward 加载更早的日志
+    """
     try:
-        print("获取日志参数:", since, until, tail, limit, before)
+        print("获取日志参数:", since, until, tail, limit, start_from_head, next_token, direction)
         
         effective_limit = limit or tail
-        logs = docker_service.get_container_logs(
+        result = docker_service.get_container_logs_paginated(
             container_id=container_id,
             since=since,
             until=until,
             tail=tail,
             limit=limit,
-            before=before
+            start_from_head=start_from_head,
+            next_token=next_token,
+            direction=direction
         )
         
-        has_more = False
-        if effective_limit and len(logs) >= effective_limit:
-            has_more = True
+        logs = result.get('logs', [])
+        next_token_response = result.get('next_token')
+        prev_token_response = result.get('prev_token')
+        
+        has_more_forward = next_token_response is not None
+        has_more_backward = prev_token_response is not None
         
         return {
             "success": True,
             "data": logs,
-            "has_more": has_more
+            "next_token": next_token_response,
+            "prev_token": prev_token_response,
+            "has_more_forward": has_more_forward,
+            "has_more_backward": has_more_backward,
+            "has_more": has_more_forward
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
