@@ -353,13 +353,8 @@ const fetchOlderLogs = async () => {
       params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
     }
     
-    if (untilTime.value || sinceTime.value) {
-      params.until = firstLogTimestamp
-      params.tail = PAGE_SIZE
-    } else {
-      params.before = firstLogTimestamp
-      params.limit = PAGE_SIZE
-    }
+    params.until = firstLogTimestamp
+    params.tail = PAGE_SIZE
 
     console.log('Fetch older logs params:', params)
 

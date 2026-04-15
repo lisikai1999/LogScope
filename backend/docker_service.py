@@ -131,6 +131,10 @@ class DockerService:
             elif limit:
                 options['tail'] = limit
             
+            if before:
+                if not until or before < until:
+                    options['until'] = before
+            
             logs = container.logs(**options)
             log_string = logs.decode('utf-8')
             
@@ -171,9 +175,6 @@ class DockerService:
                 except Exception as e:
                     print(f"Error parsing log line: {e}")
                     continue
-            
-            if before:
-                entries = [log for log in entries if log['timestamp'] < before]
             
             return entries
         except Exception as e:
