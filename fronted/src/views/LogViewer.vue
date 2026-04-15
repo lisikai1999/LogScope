@@ -450,6 +450,11 @@ const fetchOlderLogs = async () => {
     if (response.data.success) {
       const olderLogs = response.data.data
       
+      currentPrevToken = response.data.prev_token || null
+      currentNextToken = response.data.next_token || null
+      hasOlder.value = response.data.has_more_backward === true
+      hasNewer.value = response.data.has_more_forward === true || hasNewer.value
+      
       if (olderLogs.length > 0) {
         const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
         const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
@@ -460,12 +465,6 @@ const fetchOlderLogs = async () => {
           
           logs.value = [...uniqueLogs, ...logs.value]
           
-          currentPrevToken = response.data.prev_token || null
-          currentNextToken = response.data.next_token || null
-          
-          hasOlder.value = response.data.has_more_backward === true
-          hasNewer.value = response.data.has_more_forward === true || hasNewer.value
-          
           await nextTick()
           
           if (logsContainerRef.value) {
@@ -474,8 +473,6 @@ const fetchOlderLogs = async () => {
             logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
           }
         }
-      } else {
-        hasOlder.value = false
       }
     }
   } catch (err) {
@@ -573,6 +570,11 @@ const fetchNewerLogs = async () => {
     if (response.data.success) {
       const newerLogs = response.data.data
       
+      currentNextToken = response.data.next_token || null
+      currentPrevToken = response.data.prev_token || null
+      hasNewer.value = response.data.has_more_forward === true
+      hasOlder.value = response.data.has_more_backward === true || hasOlder.value
+      
       if (newerLogs.length > 0) {
         const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
         const uniqueLogs = newerLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
@@ -585,19 +587,11 @@ const fetchNewerLogs = async () => {
           
           logs.value = [...logs.value, ...uniqueLogs]
           
-          currentNextToken = response.data.next_token || null
-          currentPrevToken = response.data.prev_token || null
-          
-          hasNewer.value = response.data.has_more_forward === true
-          hasOlder.value = response.data.has_more_backward === true || hasOlder.value
-          
           if (isAtBottom) {
             await nextTick()
             scrollToBottom()
           }
         }
-      } else {
-        hasNewer.value = false
       }
     }
   } catch (err) {
@@ -687,7 +681,7 @@ const setupObservers = () => {
   if (loadNewerTrigger.value) {
     newerObserver = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
-        if (entry.isIntersecting && !loadingNewer.value && !autoRefresh.value) {
+        if (entry.isIntersecting && hasNewer.value && !loadingNewer.value && !autoRefresh.value) {
           fetchNewerLogs()
         }
       })
