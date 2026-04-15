@@ -125,8 +125,11 @@ class DockerService:
                 options['since'] = since
             if until:
                 options['until'] = until
+            
             if tail:
                 options['tail'] = tail
+            elif limit:
+                options['tail'] = limit
             
             logs = container.logs(**options)
             log_string = logs.decode('utf-8')
@@ -172,13 +175,10 @@ class DockerService:
             if before:
                 entries = [log for log in entries if log['timestamp'] < before]
             
-            if limit:
-                entries = entries[-limit:]
-            
             return entries
         except Exception as e:
             print(f"Error getting logs: {e}")
-            return []
+            raise e
     
     def _get_mock_logs(
         self,
