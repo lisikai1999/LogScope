@@ -301,17 +301,14 @@ const fetchLogs = async () => {
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
     }
-    if (tailCount.value) {
+    
+    const useLegacyTailMode = tailCount.value !== null
+    
+    if (useLegacyTailMode) {
       params.tail = tailCount.value
-    }
-    
-    const useNewPagination = sinceTime.value || untilTime.value
-    
-    if (useNewPagination) {
+    } else {
       params.start_from_head = true
       params.limit = PAGE_SIZE
-    } else if (!tailCount.value) {
-      params.tail = PAGE_SIZE
     }
 
     console.log('Fetch logs params:', params)
@@ -324,22 +321,26 @@ const fetchLogs = async () => {
     if (response.data.success) {
       logs.value = response.data.data
       
-      if (useNewPagination) {
-        currentNextToken = response.data.next_token || null
-        currentPrevToken = response.data.prev_token || null
-        hasNewer.value = response.data.has_more_forward === true
-        hasOlder.value = response.data.has_more_backward === true
-      } else {
+      if (useLegacyTailMode) {
         if (params.tail || params.limit) {
           hasOlder.value = response.data.has_more !== false
         } else {
           hasOlder.value = false
         }
         hasNewer.value = false
+      } else {
+        currentNextToken = response.data.next_token || null
+        currentPrevToken = response.data.prev_token || null
+        hasNewer.value = response.data.has_more_forward === true
+        hasOlder.value = response.data.has_more_backward === true
       }
       
       await nextTick()
-      scrollToTop()
+      if (useLegacyTailMode) {
+        scrollToBottom()
+      } else {
+        scrollToTop()
+      }
       
       retryCount = 0
     } else {
@@ -358,9 +359,9 @@ const fetchOlderLogs = async () => {
     return
   }
 
-  const useNewPagination = currentPrevToken !== null || sinceTime.value || untilTime.value
+  const useLegacyTailMode = tailCount.value !== null
   
-  if (!useNewPagination) {
+  if (useLegacyTailMode) {
     const firstLogTimestamp = logs.value.length > 0 ? logs.value[0].timestamp : 0
     if (firstLogTimestamp === 0) return
     
@@ -489,9 +490,9 @@ const fetchNewerLogs = async () => {
     return
   }
 
-  const useNewPagination = currentNextToken !== null || sinceTime.value || untilTime.value
+  const useLegacyTailMode = tailCount.value !== null
   
-  if (!useNewPagination) {
+  if (useLegacyTailMode) {
     const lastLogTimestamp = logs.value.length > 0 ? logs.value[logs.value.length - 1].timestamp : 0
     if (lastLogTimestamp === 0) return
     
