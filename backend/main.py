@@ -47,6 +47,8 @@ async def get_container_logs(
     """获取容器日志（支持时间筛选和分页）"""
     try:
         print("获取日志参数:", since, until, tail, limit, before)
+        
+        effective_limit = limit or tail
         logs = docker_service.get_container_logs(
             container_id=container_id,
             since=since,
@@ -55,10 +57,15 @@ async def get_container_logs(
             limit=limit,
             before=before
         )
+        
+        has_more = False
+        if effective_limit and len(logs) >= effective_limit:
+            has_more = True
+        
         return {
             "success": True,
             "data": logs,
-            "has_more": len(logs) == (limit or 1000) if limit else False
+            "has_more": has_more
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

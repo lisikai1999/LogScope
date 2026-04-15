@@ -169,6 +169,17 @@
             
             <!-- Logs List -->
             <div v-else class="logs-list">
+              <!-- Load Older Trigger (at top) -->
+              <div ref="loadOlderTrigger" class="load-trigger">
+                <div v-if="loadingOlder" class="loading-more">
+                  <div class="loading-spinner"></div>
+                  <span>加载更早的日志...</span>
+                </div>
+                <div v-else-if="!hasOlder && logs.length > 0" class="no-more-logs">
+                  已加载全部历史日志
+                </div>
+              </div>
+              
               <div
                 v-for="(log, index) in filteredLogs"
                 :key="`${log.timestamp}-${index}`"
@@ -186,9 +197,9 @@
                 </div>
               </div>
               
-              <!-- Load More Trigger (at bottom) -->
-              <div ref="loadMoreTrigger" class="load-trigger">
-                <div v-if="loadingMore" class="loading-more">
+              <!-- Load Newer Trigger (at bottom) -->
+              <div ref="loadNewerTrigger" class="load-trigger">
+                <div v-if="loadingNewer" class="loading-more">
                   <div class="loading-spinner"></div>
                   <span>加载更新的日志...</span>
                 </div>
@@ -199,7 +210,10 @@
           <!-- Logs Footer -->
           <div class="logs-footer">
             <span>共 {{ filteredLogs.length }} 条日志</span>
-            <span v-if="autoRefresh" class="auto-refresh-indicator">
+            <span v-if="hasOlder" class="has-more-indicator">
+              (向上滚动加载更早的日志)
+            </span>
+            <span v-else-if="autoRefresh" class="auto-refresh-indicator">
               (自动刷新中)
             </span>
           </div>
@@ -220,10 +234,13 @@ const containerId = ref(route.params.id)
 const containerInfo = ref(null)
 const logs = ref([])
 const loading = ref(true)
-const loadingMore = ref(false)
+const loadingOlder = ref(false)
+const loadingNewer = ref(false)
 const error = ref(null)
+const hasOlder = ref(true)
 const logsContainerRef = ref(null)
-const loadMoreTrigger = ref(null)
+const loadOlderTrigger = ref(null)
+const loadNewerTrigger = ref(null)
 
 const PAGE_SIZE = 1000
 const MAX_RETRY_COUNT = 3
@@ -236,8 +253,10 @@ const filterStderr = ref(true)
 const autoRefresh = ref(false)
 
 let lastLogTimestamp = 0
+let firstLogTimestamp = 0
 let refreshInterval = null
-let intersectionObserver = null
+let olderObserver = null
+let newerObserver = null
 let retryCount = 0
 
 const filteredLogs = computed(() => {
@@ -264,7 +283,9 @@ const fetchLogs = async () => {
     loading.value = true
     logs.value = []
     lastLogTimestamp = 0
+    firstLogTimestamp = 0
     error.value = null
+    hasOlder.value = true
     retryCount = 0
 
     const params = {}
@@ -294,6 +315,13 @@ const fetchLogs = async () => {
       logs.value = response.data.data
       if (logs.value.length > 0) {
         lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
+        firstLogTimestamp = logs.value[0].timestamp
+      }
+      
+      if (params.tail || params.limit) {
+        hasOlder.value = response.data.has_more !== false
+      } else {
+        hasOlder.value = false
       }
       
       await nextTick()
@@ -311,13 +339,77 @@ const fetchLogs = async () => {
   }
 }
 
-const fetchNewerLogs = async () => {
-  if (loadingMore.value || lastLogTimestamp === 0) {
+const fetchOlderLogs = async () => {
+  if (loadingOlder.value || !hasOlder.value || firstLogTimestamp === 0) {
     return
   }
 
   try {
-    loadingMore.value = true
+    loadingOlder.value = true
+
+    const params = {}
+    
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
+    
+    if (untilTime.value || sinceTime.value) {
+      params.until = firstLogTimestamp
+      params.tail = PAGE_SIZE
+    } else {
+      params.before = firstLogTimestamp
+      params.limit = PAGE_SIZE
+    }
+
+    console.log('Fetch older logs params:', params)
+
+    const response = await axios.get(
+      `/api/containers/${containerId.value}/logs`,
+      { params }
+    )
+
+    if (response.data.success) {
+      const olderLogs = response.data.data
+      
+      if (olderLogs.length > 0) {
+        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+        const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+        
+        if (uniqueLogs.length > 0) {
+          const scrollTopBefore = logsContainerRef.value?.scrollTop || 0
+          const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
+          
+          logs.value = [...uniqueLogs, ...logs.value]
+          firstLogTimestamp = uniqueLogs[0].timestamp
+          
+          await nextTick()
+          
+          if (logsContainerRef.value) {
+            const scrollHeightAfter = logsContainerRef.value.scrollHeight
+            const heightDiff = scrollHeightAfter - scrollHeightBefore
+            logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
+          }
+        }
+        
+        hasOlder.value = response.data.has_more !== false && uniqueLogs.length > 0
+      } else {
+        hasOlder.value = false
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching older logs:', err)
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+const fetchNewerLogs = async () => {
+  if (loadingNewer.value || lastLogTimestamp === 0) {
+    return
+  }
+
+  try {
+    loadingNewer.value = true
 
     const params = {
       since: lastLogTimestamp
@@ -358,7 +450,7 @@ const fetchNewerLogs = async () => {
   } catch (err) {
     console.error('Error fetching newer logs:', err)
   } finally {
-    loadingMore.value = false
+    loadingNewer.value = false
   }
 }
 
@@ -410,28 +502,48 @@ const retryFetch = async () => {
   }
 }
 
-const setupObserver = () => {
-  if (!loadMoreTrigger.value || !window.IntersectionObserver) {
+const setupObservers = () => {
+  if (!window.IntersectionObserver) {
     return
   }
 
-  if (intersectionObserver) {
-    intersectionObserver.disconnect()
+  if (olderObserver) {
+    olderObserver.disconnect()
+  }
+  
+  if (newerObserver) {
+    newerObserver.disconnect()
   }
 
-  intersectionObserver = new IntersectionObserver((entries) => {
-    entries.forEach(entry => {
-      if (entry.isIntersecting && !loadingMore.value && !autoRefresh.value) {
-        fetchNewerLogs()
-      }
+  if (loadOlderTrigger.value) {
+    olderObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && hasOlder.value && !loadingOlder.value) {
+          fetchOlderLogs()
+        }
+      })
+    }, {
+      root: logsContainerRef.value,
+      rootMargin: '100px',
+      threshold: 0.1
     })
-  }, {
-    root: logsContainerRef.value,
-    rootMargin: '100px',
-    threshold: 0.1
-  })
+    olderObserver.observe(loadOlderTrigger.value)
+  }
 
-  intersectionObserver.observe(loadMoreTrigger.value)
+  if (loadNewerTrigger.value) {
+    newerObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && !loadingNewer.value && !autoRefresh.value) {
+          fetchNewerLogs()
+        }
+      })
+    }, {
+      root: logsContainerRef.value,
+      rootMargin: '100px',
+      threshold: 0.1
+    })
+    newerObserver.observe(loadNewerTrigger.value)
+  }
 }
 
 const scrollToBottom = () => {
@@ -513,9 +625,9 @@ watch(autoRefresh, (newValue) => {
   }
 })
 
-watch(logs, () => {
+watch([logs, hasOlder], () => {
   nextTick(() => {
-    setupObserver()
+    setupObservers()
   })
 }, { deep: true })
 
@@ -528,8 +640,11 @@ onUnmounted(() => {
   if (refreshInterval) {
     clearInterval(refreshInterval)
   }
-  if (intersectionObserver) {
-    intersectionObserver.disconnect()
+  if (olderObserver) {
+    olderObserver.disconnect()
+  }
+  if (newerObserver) {
+    newerObserver.disconnect()
   }
 })
 </script>
@@ -824,6 +939,13 @@ onUnmounted(() => {
   }
 }
 
+.no-more-logs {
+  text-align: center;
+  padding: 0.75rem;
+  color: #666;
+  font-size: 0.75rem;
+}
+
 .loading {
   padding: 1rem;
 }
@@ -901,6 +1023,11 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   border-top: 1px solid #3d3d3d;
+}
+
+.has-more-indicator {
+  color: var(--primary-color);
+  font-size: 0.75rem;
 }
 
 .auto-refresh-indicator {
