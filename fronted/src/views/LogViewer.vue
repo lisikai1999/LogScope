@@ -151,19 +151,7 @@
           <div 
             class="logs-container" 
             ref="logsContainerRef"
-            @scroll="handleScroll"
           >
-            <!-- Loading more indicator at top (for older logs) -->
-            <div v-if="loadingMore" class="loading-more">
-              <div class="loading-spinner"></div>
-              <span>加载更多日志...</span>
-            </div>
-            
-            <!-- No more logs indicator -->
-            <div v-if="!hasMore && logs.length > 0 && !loadingMore" class="no-more-logs">
-              没有更多日志了
-            </div>
-
             <div v-if="loading && logs.length === 0" class="loading">
               <div v-for="i in 10" :key="i" class="skeleton"></div>
             </div>
@@ -171,6 +159,17 @@
               没有找到日志
             </div>
             <div v-else class="logs-list">
+              <!-- Load Older Trigger (at top) -->
+              <div ref="loadOlderTrigger" class="load-trigger">
+                <div v-if="loadingOlder" class="loading-more">
+                  <div class="loading-spinner"></div>
+                  <span>加载更早的日志...</span>
+                </div>
+                <div v-else-if="!hasOlder && logs.length > 0" class="no-more-logs">
+                  已加载全部历史日志
+                </div>
+              </div>
+              
               <div
                 v-for="(log, index) in filteredLogs"
                 :key="`${log.timestamp}-${index}`"
@@ -187,14 +186,22 @@
                   {{ log.message }}
                 </div>
               </div>
+              
+              <!-- Load Newer Trigger (at bottom) -->
+              <div ref="loadNewerTrigger" class="load-trigger">
+                <div v-if="loadingNewer" class="loading-more">
+                  <div class="loading-spinner"></div>
+                  <span>加载更新的日志...</span>
+                </div>
+              </div>
             </div>
           </div>
           
           <!-- Logs Footer -->
           <div class="logs-footer">
             <span>共 {{ filteredLogs.length }} 条日志</span>
-            <span v-if="hasMore" class="has-more-indicator">
-              (还有更多历史日志，向上滚动加载)
+            <span v-if="hasOlder" class="has-more-indicator">
+              (向上滚动加载更早的日志)
             </span>
           </div>
         </div>
@@ -214,10 +221,13 @@ const containerId = ref(route.params.id)
 const containerInfo = ref(null)
 const logs = ref([])
 const loading = ref(true)
-const loadingMore = ref(false)
+const loadingOlder = ref(false)
+const loadingNewer = ref(false)
 const error = ref(null)
-const hasMore = ref(true)
+const hasOlder = ref(true)
 const logsContainerRef = ref(null)
+const loadOlderTrigger = ref(null)
+const loadNewerTrigger = ref(null)
 
 const PAGE_SIZE = 1000
 
@@ -231,7 +241,8 @@ const autoRefresh = ref(false)
 let lastLogTimestamp = 0
 let firstLogTimestamp = 0
 let refreshInterval = null
-let isScrolling = false
+let olderObserver = null
+let newerObserver = null
 
 const filteredLogs = computed(() => {
   return logs.value.filter(log => {
@@ -259,7 +270,7 @@ const fetchLogs = async () => {
     lastLogTimestamp = 0
     firstLogTimestamp = 0
     error.value = null
-    hasMore.value = true
+    hasOlder.value = true
 
     const params = {}
 
@@ -290,7 +301,12 @@ const fetchLogs = async () => {
         lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
         firstLogTimestamp = logs.value[0].timestamp
       }
-      hasMore.value = response.data.has_more !== false
+      
+      if (params.limit) {
+        hasOlder.value = response.data.has_more !== false && logs.value.length === PAGE_SIZE
+      } else {
+        hasOlder.value = false
+      }
       
       await nextTick()
       scrollToBottom()
@@ -304,13 +320,13 @@ const fetchLogs = async () => {
   }
 }
 
-const fetchMoreLogs = async () => {
-  if (loadingMore.value || !hasMore.value || firstLogTimestamp === 0) {
+const fetchOlderLogs = async () => {
+  if (loadingOlder.value || !hasOlder.value || firstLogTimestamp === 0) {
     return
   }
 
   try {
-    loadingMore.value = true
+    loadingOlder.value = true
 
     const params = {
       limit: PAGE_SIZE,
@@ -349,15 +365,66 @@ const fetchMoreLogs = async () => {
           }
         }
         
-        hasMore.value = response.data.has_more !== false && uniqueLogs.length === PAGE_SIZE
+        hasOlder.value = response.data.has_more !== false && uniqueLogs.length === PAGE_SIZE
       } else {
-        hasMore.value = false
+        hasOlder.value = false
       }
     }
   } catch (err) {
-    console.error('Error fetching more logs:', err)
+    console.error('Error fetching older logs:', err)
   } finally {
-    loadingMore.value = false
+    loadingOlder.value = false
+  }
+}
+
+const fetchNewerLogs = async () => {
+  if (loadingNewer.value || lastLogTimestamp === 0) {
+    return
+  }
+
+  try {
+    loadingNewer.value = true
+
+    const params = {
+      since: lastLogTimestamp
+    }
+
+    if (untilTime.value) {
+      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+
+    const response = await axios.get(
+      `/api/containers/${containerId.value}/logs`,
+      { params }
+    )
+
+    if (response.data.success) {
+      const newerLogs = response.data.data
+      
+      if (newerLogs.length > 0) {
+        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+        const uniqueLogs = newerLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+        
+        if (uniqueLogs.length > 0) {
+          const container = logsContainerRef.value
+          const isAtBottom = container 
+            ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+            : false
+          
+          logs.value = [...logs.value, ...uniqueLogs]
+          lastLogTimestamp = uniqueLogs[uniqueLogs.length - 1].timestamp
+          
+          if (isAtBottom) {
+            await nextTick()
+            scrollToBottom()
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching newer logs:', err)
+  } finally {
+    loadingNewer.value = false
   }
 }
 
@@ -399,16 +466,47 @@ const fetchLogsAuto = async () => {
   }
 }
 
-const handleScroll = () => {
-  if (!logsContainerRef.value || loadingMore.value || !hasMore.value) {
+const setupObservers = () => {
+  if (!window.IntersectionObserver) {
     return
   }
+
+  if (olderObserver) {
+    olderObserver.disconnect()
+  }
   
-  const container = logsContainerRef.value
-  const scrollTop = container.scrollTop
-  
-  if (scrollTop < 100) {
-    fetchMoreLogs()
+  if (newerObserver) {
+    newerObserver.disconnect()
+  }
+
+  if (loadOlderTrigger.value) {
+    olderObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && hasOlder.value && !loadingOlder.value) {
+          fetchOlderLogs()
+        }
+      })
+    }, {
+      root: logsContainerRef.value,
+      rootMargin: '100px',
+      threshold: 0.1
+    })
+    olderObserver.observe(loadOlderTrigger.value)
+  }
+
+  if (loadNewerTrigger.value) {
+    newerObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && !loadingNewer.value) {
+          fetchNewerLogs()
+        }
+      })
+    }, {
+      root: logsContainerRef.value,
+      rootMargin: '100px',
+      threshold: 0.1
+    })
+    newerObserver.observe(loadNewerTrigger.value)
   }
 }
 
@@ -491,6 +589,12 @@ watch(autoRefresh, (newValue) => {
   }
 })
 
+watch([hasOlder, logs], () => {
+  nextTick(() => {
+    setupObservers()
+  })
+}, { deep: true })
+
 onMounted(() => {
   fetchContainerInfo()
   fetchLogs()
@@ -499,6 +603,12 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshInterval) {
     clearInterval(refreshInterval)
+  }
+  if (olderObserver) {
+    olderObserver.disconnect()
+  }
+  if (newerObserver) {
+    newerObserver.disconnect()
   }
 })
 </script>
@@ -743,6 +853,10 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
+.load-trigger {
+  min-height: 20px;
+}
+
 .loading-more {
   display: flex;
   align-items: center;
@@ -751,7 +865,6 @@ onUnmounted(() => {
   padding: 1rem;
   color: #888;
   font-size: 0.875rem;
-  background-color: #252525;
 }
 
 .loading-spinner {
@@ -774,7 +887,6 @@ onUnmounted(() => {
   padding: 0.75rem;
   color: #666;
   font-size: 0.75rem;
-  background-color: #252525;
 }
 
 .loading {
