@@ -26,12 +26,15 @@ async def list_containers(
 ):
     """获取容器列表"""
     try:
+        print(f"[DEBUG] Received all_containers parameter:", all_containers, "type:", type(all_containers))
         containers = docker_service.list_containers(all_containers)
+        print(f"[DEBUG] Returning", len(containers), "containers")
         return {
             "success": True,
             "data": containers
         }
     except Exception as e:
+        print(f"[ERROR] {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

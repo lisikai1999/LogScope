@@ -39,7 +39,6 @@
                 <input
                   type="checkbox"
                   v-model="showAll"
-                  @change="fetchContainers"
                 />
                 <span>显示全部容器</span>
               </label>
@@ -119,7 +118,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 
 const containers = ref([])
@@ -176,6 +175,11 @@ const getStatusClass = (state) => {
   }
   return classes[state] || 'status-unknown'
 }
+
+watch(showAll, (newValue) => {
+  console.log('[DEBUG] showAll changed to:', newValue)
+  fetchContainers()
+})
 
 onMounted(() => {
   fetchContainers()
