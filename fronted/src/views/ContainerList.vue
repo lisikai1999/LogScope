@@ -145,7 +145,7 @@ const fetchContainers = async () => {
     loading.value = true
     error.value = null
     const response = await axios.get('/api/containers', {
-      params: { all: showAll.value }
+      params: { all_containers: showAll.value }
     })
     if (response.data.success) {
       containers.value = response.data.data

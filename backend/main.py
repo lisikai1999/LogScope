@@ -22,11 +22,11 @@ async def root():
 
 @app.get("/api/containers")
 async def list_containers(
-    all: bool = Query(False, description="是否显示所有容器（包括已停止的）")
+    all_containers: bool = Query(False, description="是否显示所有容器（包括已停止的）")
 ):
     """获取容器列表"""
     try:
-        containers = docker_service.list_containers(all)
+        containers = docker_service.list_containers(all_containers)
         return {
             "success": True,
             "data": containers
