@@ -41,14 +41,45 @@ class DockerService:
             containers = self.client.containers.list(all=all_containers)
             result = []
             for container in containers:
-                result.append({
-                    'id': container.id,
-                    'names': [name.replace('/', '') for name in [container.name]],
-                    'image': container.image.tags[0] if container.image.tags else container.image.id[:12],
-                    'state': container.status,
-                    'status': container.status,
-                    'created': container.attrs['Created']
-                })
+                try:
+                    # 安全地获取镜像信息
+                    image_name = '<unknown>'
+                    try:
+                        if container.image:
+                            if container.image.tags and len(container.image.tags) > 0:
+                                image_name = container.image.tags[0]
+                            else:
+                                # 尝试从 attrs 中获取镜像信息
+                                image_id = container.attrs.get('Image', '')
+                                if image_id.startswith('sha256:'):
+                                    image_name = image_id[7:19]  # 取前12个字符
+                                else:
+                                    image_name = image_id[:12] if image_id else '<unknown>'
+                    except Exception as img_e:
+                        # 镜像可能已被删除，尝试从 attrs 中获取
+                        print(f"[DEBUG] Failed to get image info for container {container.id}: {img_e}")
+                        # 尝试从 Config 中获取镜像名称
+                        config_image = container.attrs.get('Config', {}).get('Image', '')
+                        if config_image:
+                            image_name = config_image
+                        else:
+                            image_id = container.attrs.get('Image', '')
+                            if image_id.startswith('sha256:'):
+                                image_name = image_id[7:19]
+                            else:
+                                image_name = image_id[:12] if image_id else '<unknown>'
+                    
+                    result.append({
+                        'id': container.id,
+                        'names': [name.replace('/', '') for name in [container.name]],
+                        'image': image_name,
+                        'state': container.status,
+                        'status': container.status,
+                        'created': container.attrs['Created']
+                    })
+                except Exception as e:
+                    print(f"[ERROR] Failed to process container {container.id}: {e}")
+                    # 继续处理其他容器，不返回空列表
             return result
         except Exception as e:
             print(f"Error listing containers: {e}")
