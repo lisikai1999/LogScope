@@ -1,7 +1,9 @@
+import traceback
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 from docker_service import docker_service
+from logger import app_logger
 
 app = FastAPI(title="Docker 日志查看器 API", version="1.0.0")
 
@@ -13,6 +15,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def log_error(endpoint: str, error: Exception, **kwargs):
+    """
+    统一的错误日志记录函数
+    :param endpoint: 端点名称
+    :param error: 异常对象
+    :param kwargs: 其他上下文信息
+    """
+    error_msg = f"[{endpoint}] {type(error).__name__}: {str(error)}"
+    if kwargs:
+        context = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
+        error_msg += f" | Context: {context}"
+    
+    app_logger.error(error_msg)
+    app_logger.error(f"Stack trace:\n{traceback.format_exc()}")
 
 
 @app.get("/")
@@ -29,14 +47,14 @@ async def list_containers(
 ):
     """获取容器列表（支持分页和搜索）"""
     try:
-        print(f"[DEBUG] Received params: all_containers={all_containers}, page={page}, page_size={page_size}, search={search}")
+        app_logger.debug(f"Received params: all_containers={all_containers}, page={page}, page_size={page_size}, search={search}")
         result = docker_service.list_containers(
             all_containers=all_containers,
             page=page,
             page_size=page_size,
             search=search
         )
-        print(f"[DEBUG] Returning {len(result['data'])} of {result['total']} containers")
+        app_logger.debug(f"Returning {len(result['data'])} of {result['total']} containers")
         return {
             "success": True,
             "data": result['data'],
@@ -46,7 +64,13 @@ async def list_containers(
             "total_pages": result['total_pages']
         }
     except Exception as e:
-        print(f"[ERROR] {e}")
+        log_error(
+            "list_containers", e,
+            all_containers=all_containers,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -59,7 +83,8 @@ async def get_container_logs(
     limit: Optional[int] = Query(None, description="每页返回的日志数量"),
     start_from_head: bool = Query(False, description="是否从时间范围开头（最老的日志）开始加载"),
     next_token: Optional[str] = Query(None, description="分页令牌，用于加载下一页"),
-    direction: Optional[str] = Query(None, description="分页方向：forward（向后/更新）或 backward（向前/更早）")
+    direction: Optional[str] = Query(None, description="分页方向：forward（向后/更新）或 backward（向前/更早）"),
+    search: Optional[str] = Query(None, description="搜索关键词，用于过滤日志消息内容")
 ):
     """获取容器日志（支持时间筛选和分页）
     
@@ -69,7 +94,7 @@ async def get_container_logs(
     - direction: forward 加载更新的日志，backward 加载更早的日志
     """
     try:
-        print("获取日志参数:", since, until, tail, limit, start_from_head, next_token, direction)
+        app_logger.debug(f"获取日志参数: since={since}, until={until}, tail={tail}, limit={limit}, start_from_head={start_from_head}, next_token={next_token}, direction={direction}, search={search}")
         
         effective_limit = limit or tail
         result = docker_service.get_container_logs_paginated(
@@ -80,7 +105,8 @@ async def get_container_logs(
             limit=limit,
             start_from_head=start_from_head,
             next_token=next_token,
-            direction=direction
+            direction=direction,
+            search=search
         )
         
         logs = result.get('logs', [])
@@ -100,6 +126,18 @@ async def get_container_logs(
             "has_more": has_more_forward
         }
     except Exception as e:
+        log_error(
+            "get_container_logs", e,
+            container_id=container_id,
+            since=since,
+            until=until,
+            tail=tail,
+            limit=limit,
+            start_from_head=start_from_head,
+            next_token=next_token,
+            direction=direction,
+            search=search
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -113,6 +151,7 @@ async def get_container_info(container_id: str):
             "data": info
         }
     except Exception as e:
+        log_error("get_container_info", e, container_id=container_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -126,6 +165,7 @@ async def start_container(container_id: str):
             "message": "容器启动成功" if success else "容器启动失败"
         }
     except Exception as e:
+        log_error("start_container", e, container_id=container_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -139,6 +179,7 @@ async def stop_container(container_id: str):
             "message": "容器停止成功" if success else "容器停止失败"
         }
     except Exception as e:
+        log_error("stop_container", e, container_id=container_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 

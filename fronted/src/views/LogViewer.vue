@@ -118,6 +118,34 @@
                 </div>
               </div>
             </div>
+            <div class="filter-row">
+              <div class="filter-group filter-group-full">
+                <label class="filter-label">搜索日志:</label>
+                <div class="search-group">
+                  <input
+                    type="text"
+                    v-model="searchQuery"
+                    placeholder="输入关键词搜索日志内容..."
+                    class="filter-input search-input"
+                    @keyup.enter="fetchLogs"
+                  />
+                  <button
+                    class="btn btn-primary"
+                    @click="fetchLogs"
+                    :disabled="loading"
+                  >
+                    搜索
+                  </button>
+                  <button
+                    class="btn btn-outline"
+                    @click="clearSearch"
+                    v-if="searchQuery"
+                  >
+                    清除
+                  </button>
+                </div>
+              </div>
+            </div>
             <div class="filter-actions">
               <button
                 class="btn btn-primary"
@@ -255,6 +283,7 @@ const tailCount = ref(null)
 const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
+const searchQuery = ref('')
 
 let currentNextToken = null
 let currentPrevToken = null
@@ -273,7 +302,7 @@ const filteredLogs = computed(() => {
 
 const fetchContainerInfo = async () => {
   try {
-    const response = await axios.get(`/api/containers/${containerId.value}`)
+    const response = await axios.get(`/api/containers/${containerId.value}/info`)
     if (response.data.success) {
       containerInfo.value = response.data.data
     }
@@ -300,6 +329,9 @@ const fetchLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
     
     const useLegacyTailMode = tailCount.value !== null
@@ -373,6 +405,9 @@ const fetchOlderLogs = async () => {
       if (sinceTime.value) {
         params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
       
       params.until = firstLogTimestamp
       params.tail = PAGE_SIZE
@@ -439,6 +474,9 @@ const fetchOlderLogs = async () => {
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
     }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
+    }
 
     console.log('Fetch older logs params:', params)
 
@@ -503,6 +541,9 @@ const fetchNewerLogs = async () => {
       if (untilTime.value) {
         params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
 
       const response = await axios.get(
         `/api/containers/${containerId.value}/logs`,
@@ -558,6 +599,9 @@ const fetchNewerLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
 
     console.log('Fetch newer logs params:', params)
@@ -763,6 +807,12 @@ const clearFilters = () => {
   tailCount.value = null
   filterStdout.value = true
   filterStderr.value = true
+  searchQuery.value = ''
+  fetchLogs()
+}
+
+const clearSearch = () => {
+  searchQuery.value = ''
   fetchLogs()
 }
 
@@ -948,6 +998,21 @@ onUnmounted(() => {
 
 .filter-input-number {
   min-width: 100px;
+}
+
+.filter-group-full {
+  width: 100%;
+}
+
+.search-group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 300px;
 }
 
 .quick-select {
