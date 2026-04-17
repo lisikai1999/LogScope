@@ -60,7 +60,8 @@ async def get_container_logs(
     limit: Optional[int] = Query(None, description="每页返回的日志数量"),
     start_from_head: bool = Query(False, description="是否从时间范围开头（最老的日志）开始加载"),
     next_token: Optional[str] = Query(None, description="分页令牌，用于加载下一页"),
-    direction: Optional[str] = Query(None, description="分页方向：forward（向后/更新）或 backward（向前/更早）")
+    direction: Optional[str] = Query(None, description="分页方向：forward（向后/更新）或 backward（向前/更早）"),
+    search: Optional[str] = Query(None, description="搜索关键词，用于过滤日志消息内容")
 ):
     """获取容器日志（支持时间筛选和分页）
     
@@ -70,7 +71,7 @@ async def get_container_logs(
     - direction: forward 加载更新的日志，backward 加载更早的日志
     """
     try:
-        app_logger.debug(f"获取日志参数: since={since}, until={until}, tail={tail}, limit={limit}, start_from_head={start_from_head}, next_token={next_token}, direction={direction}")
+        app_logger.debug(f"获取日志参数: since={since}, until={until}, tail={tail}, limit={limit}, start_from_head={start_from_head}, next_token={next_token}, direction={direction}, search={search}")
         
         effective_limit = limit or tail
         result = docker_service.get_container_logs_paginated(
@@ -81,7 +82,8 @@ async def get_container_logs(
             limit=limit,
             start_from_head=start_from_head,
             next_token=next_token,
-            direction=direction
+            direction=direction,
+            search=search
         )
         
         logs = result.get('logs', [])

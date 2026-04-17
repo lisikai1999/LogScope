@@ -187,7 +187,8 @@ class DockerService:
         until: Optional[int] = None,
         tail: Optional[int] = None,
         limit: Optional[int] = None,
-        before: Optional[int] = None
+        before: Optional[int] = None,
+        search: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """获取容器日志（支持时间筛选和分页）"""
         if not self.docker_available:
@@ -257,6 +258,13 @@ class DockerService:
                     app_logger.error(f"Error parsing log line: {e}")
                     continue
             
+            if search:
+                search_lower = search.lower()
+                entries = [
+                    entry for entry in entries
+                    if search_lower in entry['message'].lower()
+                ]
+            
             return entries
         except Exception as e:
             app_logger.error(f"Error getting logs: {e}")
@@ -271,7 +279,8 @@ class DockerService:
         limit: Optional[int] = None,
         start_from_head: bool = False,
         next_token: Optional[str] = None,
-        direction: Optional[str] = None
+        direction: Optional[str] = None,
+        search: Optional[str] = None
     ) -> Dict[str, Any]:
         """获取容器日志（支持 CloudWatch 风格的分页）
         
@@ -290,7 +299,7 @@ class DockerService:
         if not self.docker_available:
             return self._get_mock_logs_paginated(
                 container_id, since, until, tail, limit, 
-                start_from_head, next_token, direction
+                start_from_head, next_token, direction, search
             )
         
         try:
@@ -301,7 +310,8 @@ class DockerService:
                 since=since,
                 until=until,
                 tail=None,
-                limit=None
+                limit=None,
+                search=search
             )
             
             all_logs.sort(key=lambda x: x['timestamp'])
@@ -466,7 +476,8 @@ class DockerService:
         until: Optional[int] = None,
         tail: Optional[int] = None,
         limit: Optional[int] = None,
-        before: Optional[int] = None
+        before: Optional[int] = None,
+        search: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """返回模拟的日志数据（用于演示）"""
         logs = self._generate_mock_logs(2500)
@@ -478,6 +489,12 @@ class DockerService:
             filtered_logs = [log for log in filtered_logs if log['timestamp'] <= until]
         if before:
             filtered_logs = [log for log in filtered_logs if log['timestamp'] < before]
+        if search:
+            search_lower = search.lower()
+            filtered_logs = [
+                log for log in filtered_logs
+                if search_lower in log['message'].lower()
+            ]
         if tail:
             filtered_logs = filtered_logs[-tail:]
         if limit:
@@ -494,7 +511,8 @@ class DockerService:
         limit: Optional[int] = None,
         start_from_head: bool = False,
         next_token: Optional[str] = None,
-        direction: Optional[str] = None
+        direction: Optional[str] = None,
+        search: Optional[str] = None
     ) -> Dict[str, Any]:
         """返回模拟的分页日志数据"""
         effective_limit = limit or tail or 1000
@@ -505,6 +523,12 @@ class DockerService:
             all_logs = [log for log in all_logs if log['timestamp'] >= since]
         if until:
             all_logs = [log for log in all_logs if log['timestamp'] <= until]
+        if search:
+            search_lower = search.lower()
+            all_logs = [
+                log for log in all_logs
+                if search_lower in log['message'].lower()
+            ]
         
         all_logs.sort(key=lambda x: x['timestamp'])
         
