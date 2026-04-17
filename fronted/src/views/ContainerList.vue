@@ -70,12 +70,12 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="filteredContainers.length === 0">
+                <tr v-if="total === 0">
                   <td colspan="7" class="empty-state">
                     {{ searchQuery ? '没有找到匹配的容器' : '暂无容器' }}
                   </td>
                 </tr>
-                <tr v-for="container in paginatedContainers" :key="container.id">
+                <tr v-for="container in containers" :key="container.id">
                   <td>
                     <div
                       class="status-dot"
@@ -108,7 +108,7 @@
               </tbody>
             </table>
             <div class="table-footer">
-              <span>共 {{ filteredContainers.length }} 个容器</span>
+              <span>共 {{ total }} 个容器</span>
               <div v-if="totalPages > 1" class="pagination">
                 <button
                   class="pagination-btn"
@@ -137,7 +137,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import axios from 'axios'
 
 const containers = ref([])
@@ -148,38 +148,30 @@ const showAll = ref(false)
 
 const currentPage = ref(1)
 const pageSize = ref(20)
-
-const filteredContainers = computed(() => {
-  const query = searchQuery.value.toLowerCase()
-  return containers.value.filter(container => {
-    const name = getContainerName(container.names).toLowerCase()
-    return (
-      name.includes(query) ||
-      container.image.toLowerCase().includes(query) ||
-      container.id.toLowerCase().includes(query)
-    )
-  })
-})
-
-const totalPages = computed(() => {
-  return Math.ceil(filteredContainers.value.length / pageSize.value)
-})
-
-const paginatedContainers = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  const end = start + pageSize.value
-  return filteredContainers.value.slice(start, end)
-})
+const total = ref(0)
+const totalPages = ref(0)
 
 const fetchContainers = async () => {
   try {
     loading.value = true
     error.value = null
-    const response = await axios.get('/api/containers', {
-      params: { all_containers: showAll.value }
-    })
+    
+    const params = {
+      all_containers: showAll.value,
+      page: currentPage.value,
+      page_size: pageSize.value
+    }
+    
+    if (searchQuery.value && searchQuery.value.trim()) {
+      params.search = searchQuery.value.trim()
+    }
+    
+    const response = await axios.get('/api/containers', { params })
+    
     if (response.data.success) {
       containers.value = response.data.data
+      total.value = response.data.total
+      totalPages.value = response.data.total_pages
     } else {
       error.value = response.data.error || '获取容器列表失败'
     }
@@ -217,12 +209,14 @@ const goToPage = (page) => {
 const nextPage = () => {
   if (currentPage.value < totalPages.value) {
     currentPage.value++
+    fetchContainers()
   }
 }
 
 const prevPage = () => {
   if (currentPage.value > 1) {
     currentPage.value--
+    fetchContainers()
   }
 }
 
@@ -232,11 +226,18 @@ watch(showAll, (newValue) => {
   fetchContainers()
 })
 
+let searchDebounceTimer = null
 watch(searchQuery, () => {
-  currentPage.value = 1
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+  searchDebounceTimer = setTimeout(() => {
+    currentPage.value = 1
+    fetchContainers()
+  }, 300)
 })
 
-watch(filteredContainers, () => {
+watch(currentPage, () => {
   if (currentPage.value > totalPages.value && totalPages.value > 0) {
     currentPage.value = totalPages.value
   }

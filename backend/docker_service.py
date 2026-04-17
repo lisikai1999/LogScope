@@ -31,34 +31,44 @@ class DockerService:
         except:
             return False
     
-    def list_containers(self, all_containers: bool = False) -> List[Dict[str, Any]]:
-        """获取所有容器列表"""
+    def list_containers(
+        self, 
+        all_containers: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """获取容器列表（支持分页和搜索）
+        
+        返回：
+        - total: 容器总数
+        - page: 当前页码
+        - page_size: 每页数量
+        - total_pages: 总页数
+        - data: 当前页的容器列表
+        """
         if not self.docker_available:
-            # 返回模拟数据
-            return self._get_mock_containers(all_containers)
+            containers = self._get_mock_containers(all_containers)
+            return self._paginate_containers(containers, page, page_size, search)
         
         try:
             containers = self.client.containers.list(all=all_containers)
             result = []
             for container in containers:
                 try:
-                    # 安全地获取镜像信息
                     image_name = '<unknown>'
                     try:
                         if container.image:
                             if container.image.tags and len(container.image.tags) > 0:
                                 image_name = container.image.tags[0]
                             else:
-                                # 尝试从 attrs 中获取镜像信息
                                 image_id = container.attrs.get('Image', '')
                                 if image_id.startswith('sha256:'):
-                                    image_name = image_id[7:19]  # 取前12个字符
+                                    image_name = image_id[7:19]
                                 else:
                                     image_name = image_id[:12] if image_id else '<unknown>'
                     except Exception as img_e:
-                        # 镜像可能已被删除，尝试从 attrs 中获取
                         print(f"[DEBUG] Failed to get image info for container {container.id}: {img_e}")
-                        # 尝试从 Config 中获取镜像名称
                         config_image = container.attrs.get('Config', {}).get('Image', '')
                         if config_image:
                             image_name = config_image
@@ -79,11 +89,50 @@ class DockerService:
                     })
                 except Exception as e:
                     print(f"[ERROR] Failed to process container {container.id}: {e}")
-                    # 继续处理其他容器，不返回空列表
-            return result
+            return self._paginate_containers(result, page, page_size, search)
         except Exception as e:
             print(f"Error listing containers: {e}")
-            return []
+            return {
+                'total': 0,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': 0,
+                'data': []
+            }
+    
+    def _paginate_containers(
+        self, 
+        containers: List[Dict[str, Any]], 
+        page: int = 1, 
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """对容器列表进行分页和搜索处理"""
+        filtered_containers = containers
+        
+        if search:
+            search_lower = search.lower()
+            filtered_containers = [
+                c for c in containers
+                if (search_lower in c.get('names', [''])[0].lower() or
+                    search_lower in c.get('image', '').lower() or
+                    search_lower in c.get('id', '').lower())
+            ]
+        
+        total = len(filtered_containers)
+        total_pages = (total + page_size - 1) // page_size
+        
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        data = filtered_containers[start_index:end_index]
+        
+        return {
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
+            'data': data
+        }
     
     def _get_mock_containers(self, all_containers: bool) -> List[Dict[str, Any]]:
         """返回模拟的容器数据（用于演示）"""

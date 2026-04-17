@@ -22,16 +22,28 @@ async def root():
 
 @app.get("/api/containers")
 async def list_containers(
-    all_containers: bool = Query(False, description="是否显示所有容器（包括已停止的）")
+    all_containers: bool = Query(False, description="是否显示所有容器（包括已停止的）"),
+    page: int = Query(1, ge=1, description="页码，从 1 开始"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量，1-100"),
+    search: Optional[str] = Query(None, description="搜索关键词（容器名称、镜像、ID）")
 ):
-    """获取容器列表"""
+    """获取容器列表（支持分页和搜索）"""
     try:
-        print(f"[DEBUG] Received all_containers parameter:", all_containers, "type:", type(all_containers))
-        containers = docker_service.list_containers(all_containers)
-        print(f"[DEBUG] Returning", len(containers), "containers")
+        print(f"[DEBUG] Received params: all_containers={all_containers}, page={page}, page_size={page_size}, search={search}")
+        result = docker_service.list_containers(
+            all_containers=all_containers,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+        print(f"[DEBUG] Returning {len(result['data'])} of {result['total']} containers")
         return {
             "success": True,
-            "data": containers
+            "data": result['data'],
+            "total": result['total'],
+            "page": result['page'],
+            "page_size": result['page_size'],
+            "total_pages": result['total_pages']
         }
     except Exception as e:
         print(f"[ERROR] {e}")
