@@ -1,8 +1,33 @@
 import os
 import time
+import traceback
 import docker
 from datetime import datetime
 from typing import List, Optional, Dict, Any
+from logger import app_logger
+from exceptions import (
+    ContainerNotFoundError,
+    DockerServiceError,
+    ContainerOperationError,
+    LogFetchError,
+    InvalidParameterError
+)
+
+
+def log_service_error(method: str, error: Exception, **kwargs):
+    """
+    统一的服务层错误日志记录函数
+    :param method: 方法名称
+    :param error: 异常对象
+    :param kwargs: 其他上下文信息
+    """
+    error_msg = f"[DockerService.{method}] {type(error).__name__}: {str(error)}"
+    if kwargs:
+        context = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
+        error_msg += f" | Context: {context}"
+    
+    app_logger.error(error_msg)
+    app_logger.error(f"Stack trace:\n{traceback.format_exc()}")
 
 
 DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock"
@@ -18,7 +43,7 @@ class DockerService:
             try:
                 self.client = docker.from_env()
             except Exception as e:
-                print(f"Docker initialization failed: {e}")
+                log_service_error("__init__", e)
                 self.docker_available = False
     
     def _check_docker_available(self) -> bool:
@@ -68,7 +93,7 @@ class DockerService:
                                 else:
                                     image_name = image_id[:12] if image_id else '<unknown>'
                     except Exception as img_e:
-                        print(f"[DEBUG] Failed to get image info for container {container.id}: {img_e}")
+                        app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
                         config_image = container.attrs.get('Config', {}).get('Image', '')
                         if config_image:
                             image_name = config_image
@@ -88,10 +113,10 @@ class DockerService:
                         'created': container.attrs['Created']
                     })
                 except Exception as e:
-                    print(f"[ERROR] Failed to process container {container.id}: {e}")
+                    log_service_error("list_containers", e, container_id=container.id[:12] if container.id else "unknown")
             return self._paginate_containers(result, page, page_size, search)
         except Exception as e:
-            print(f"Error listing containers: {e}")
+            log_service_error("list_containers", e, all_containers=all_containers, page=page, page_size=page_size, search=search)
             return {
                 'total': 0,
                 'page': page,
@@ -186,15 +211,22 @@ class DockerService:
         until: Optional[int] = None,
         tail: Optional[int] = None,
         limit: Optional[int] = None,
-        before: Optional[int] = None
+        before: Optional[int] = None,
+        search: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """获取容器日志（支持时间筛选和分页）"""
         if not self.docker_available:
-            return self._get_mock_logs(container_id, since, until, tail, limit, before)
+            return self._get_mock_logs(container_id, since, until, tail, limit, before, search)
         
         try:
             container = self.client.containers.get(container_id)
-            
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_container_logs", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
             options = {
                 'stdout': True,
                 'stderr': True,
@@ -242,7 +274,7 @@ class DockerService:
                     try:
                         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
                     except:
-                        print("断点1====>时间戳解析异常:", timestamp_str)
+                        app_logger.debug(f"时间戳解析异常: {timestamp_str}")
                         continue
                     
                     header = line[:8]
@@ -253,13 +285,22 @@ class DockerService:
                         'message': message
                     })
                 except Exception as e:
-                    print(f"Error parsing log line: {e}")
+                    app_logger.error(f"Error parsing log line: {e}")
                     continue
+            
+            if search:
+                search_lower = search.lower()
+                entries = [
+                    entry for entry in entries
+                    if search_lower in entry['message'].lower()
+                ]
             
             return entries
         except Exception as e:
-            print(f"Error getting logs: {e}")
-            raise e
+            log_service_error("get_container_logs", e, container_id=container_id, since=since, until=until, tail=tail, limit=limit, search=search)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise LogFetchError(f"获取日志失败: {str(e)}")
     
     def get_container_logs_paginated(
         self,
@@ -270,7 +311,8 @@ class DockerService:
         limit: Optional[int] = None,
         start_from_head: bool = False,
         next_token: Optional[str] = None,
-        direction: Optional[str] = None
+        direction: Optional[str] = None,
+        search: Optional[str] = None
     ) -> Dict[str, Any]:
         """获取容器日志（支持 CloudWatch 风格的分页）
         
@@ -289,7 +331,7 @@ class DockerService:
         if not self.docker_available:
             return self._get_mock_logs_paginated(
                 container_id, since, until, tail, limit, 
-                start_from_head, next_token, direction
+                start_from_head, next_token, direction, search
             )
         
         try:
@@ -300,7 +342,8 @@ class DockerService:
                 since=since,
                 until=until,
                 tail=None,
-                limit=None
+                limit=None,
+                search=search
             )
             
             all_logs.sort(key=lambda x: x['timestamp'])
@@ -309,8 +352,21 @@ class DockerService:
                 all_logs, effective_limit, start_from_head, next_token, direction
             )
         except Exception as e:
-            print(f"Error getting paginated logs: {e}")
-            raise e
+            log_service_error(
+                "get_container_logs_paginated", e,
+                container_id=container_id,
+                since=since,
+                until=until,
+                tail=tail,
+                limit=limit,
+                start_from_head=start_from_head,
+                next_token=next_token,
+                direction=direction,
+                search=search
+            )
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError, LogFetchError)):
+                raise
+            raise LogFetchError(f"获取分页日志失败: {str(e)}")
     
     def _paginate_logs(
         self,
@@ -465,7 +521,8 @@ class DockerService:
         until: Optional[int] = None,
         tail: Optional[int] = None,
         limit: Optional[int] = None,
-        before: Optional[int] = None
+        before: Optional[int] = None,
+        search: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """返回模拟的日志数据（用于演示）"""
         logs = self._generate_mock_logs(2500)
@@ -477,6 +534,12 @@ class DockerService:
             filtered_logs = [log for log in filtered_logs if log['timestamp'] <= until]
         if before:
             filtered_logs = [log for log in filtered_logs if log['timestamp'] < before]
+        if search:
+            search_lower = search.lower()
+            filtered_logs = [
+                log for log in filtered_logs
+                if search_lower in log['message'].lower()
+            ]
         if tail:
             filtered_logs = filtered_logs[-tail:]
         if limit:
@@ -493,7 +556,8 @@ class DockerService:
         limit: Optional[int] = None,
         start_from_head: bool = False,
         next_token: Optional[str] = None,
-        direction: Optional[str] = None
+        direction: Optional[str] = None,
+        search: Optional[str] = None
     ) -> Dict[str, Any]:
         """返回模拟的分页日志数据"""
         effective_limit = limit or tail or 1000
@@ -504,6 +568,12 @@ class DockerService:
             all_logs = [log for log in all_logs if log['timestamp'] >= since]
         if until:
             all_logs = [log for log in all_logs if log['timestamp'] <= until]
+        if search:
+            search_lower = search.lower()
+            all_logs = [
+                log for log in all_logs
+                if search_lower in log['message'].lower()
+            ]
         
         all_logs.sort(key=lambda x: x['timestamp'])
         
@@ -514,48 +584,106 @@ class DockerService:
     def get_container_info(self, container_id: str) -> Dict[str, Any]:
         """获取容器详情"""
         if not self.docker_available:
-            # 返回模拟数据
             return {
+                'id': 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890',
                 'names': ['web-app'],
                 'image': 'nginx:latest',
                 'state': 'running',
-                'status': 'Up 2 hours'
+                'status': 'Up 2 hours',
+                'created': int(time.time() - 7200)
             }
         
         try:
             container = self.client.containers.get(container_id)
-            return container.attrs
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_container_info", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            image_name = '<unknown>'
+            try:
+                if container.image:
+                    if container.image.tags and len(container.image.tags) > 0:
+                        image_name = container.image.tags[0]
+                    else:
+                        image_id = container.attrs.get('Image', '')
+                        if image_id.startswith('sha256:'):
+                            image_name = image_id[7:19]
+                        else:
+                            image_name = image_id[:12] if image_id else '<unknown>'
+            except Exception as img_e:
+                app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
+                config_image = container.attrs.get('Config', {}).get('Image', '')
+                if config_image:
+                    image_name = config_image
+                else:
+                    image_id = container.attrs.get('Image', '')
+                    if image_id.startswith('sha256:'):
+                        image_name = image_id[7:19]
+                    else:
+                        image_name = image_id[:12] if image_id else '<unknown>'
+            
+            return {
+                'id': container.id,
+                'names': [container.name.replace('/', '')],
+                'image': image_name,
+                'state': container.status,
+                'status': container.status,
+                'created': container.attrs.get('Created', 0)
+            }
         except Exception as e:
-            print(f"Error getting container info: {e}")
-            return {}
+            log_service_error("get_container_info", e, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取容器信息失败: {str(e)}")
     
     def start_container(self, container_id: str) -> bool:
         """启动容器"""
         if not self.docker_available:
-            print("Docker is not available in demo mode")
-            return False
+            app_logger.warning("Docker is not available in demo mode")
+            raise DockerServiceError("Docker 服务不可用")
         
         try:
             container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("start_container", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
             container.start()
             return True
         except Exception as e:
-            print(f"Error starting container: {e}")
-            return False
+            log_service_error("start_container", e, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"启动容器失败: {str(e)}")
     
     def stop_container(self, container_id: str) -> bool:
         """停止容器"""
         if not self.docker_available:
-            print("Docker is not available in demo mode")
-            return False
+            app_logger.warning("Docker is not available in demo mode")
+            raise DockerServiceError("Docker 服务不可用")
         
         try:
             container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("stop_container", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
             container.stop()
             return True
         except Exception as e:
-            print(f"Error stopping container: {e}")
-            return False
+            log_service_error("stop_container", e, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"停止容器失败: {str(e)}")
 
 
 # 全局实例
