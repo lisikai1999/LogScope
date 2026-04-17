@@ -1,9 +1,26 @@
 import os
 import time
+import traceback
 import docker
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from logger import app_logger
+
+
+def log_service_error(method: str, error: Exception, **kwargs):
+    """
+    统一的服务层错误日志记录函数
+    :param method: 方法名称
+    :param error: 异常对象
+    :param kwargs: 其他上下文信息
+    """
+    error_msg = f"[DockerService.{method}] {type(error).__name__}: {str(error)}"
+    if kwargs:
+        context = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
+        error_msg += f" | Context: {context}"
+    
+    app_logger.error(error_msg)
+    app_logger.error(f"Stack trace:\n{traceback.format_exc()}")
 
 
 DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock"
@@ -19,7 +36,7 @@ class DockerService:
             try:
                 self.client = docker.from_env()
             except Exception as e:
-                app_logger.error(f"Docker initialization failed: {e}")
+                log_service_error("__init__", e)
                 self.docker_available = False
     
     def _check_docker_available(self) -> bool:
@@ -89,10 +106,10 @@ class DockerService:
                         'created': container.attrs['Created']
                     })
                 except Exception as e:
-                    app_logger.error(f"Failed to process container {container.id}: {e}")
+                    log_service_error("list_containers", e, container_id=container.id[:12] if container.id else "unknown")
             return self._paginate_containers(result, page, page_size, search)
         except Exception as e:
-            app_logger.error(f"Error listing containers: {e}")
+            log_service_error("list_containers", e, all_containers=all_containers, page=page, page_size=page_size, search=search)
             return {
                 'total': 0,
                 'page': page,
@@ -267,7 +284,7 @@ class DockerService:
             
             return entries
         except Exception as e:
-            app_logger.error(f"Error getting logs: {e}")
+            log_service_error("get_container_logs", e, container_id=container_id, since=since, until=until, tail=tail, limit=limit, search=search)
             raise e
     
     def get_container_logs_paginated(
@@ -320,7 +337,18 @@ class DockerService:
                 all_logs, effective_limit, start_from_head, next_token, direction
             )
         except Exception as e:
-            app_logger.error(f"Error getting paginated logs: {e}")
+            log_service_error(
+                "get_container_logs_paginated", e,
+                container_id=container_id,
+                since=since,
+                until=until,
+                tail=tail,
+                limit=limit,
+                start_from_head=start_from_head,
+                next_token=next_token,
+                direction=direction,
+                search=search
+            )
             raise e
     
     def _paginate_logs(
@@ -586,7 +614,7 @@ class DockerService:
                 'created': container.attrs.get('Created', 0)
             }
         except Exception as e:
-            app_logger.error(f"Error getting container info: {e}")
+            log_service_error("get_container_info", e, container_id=container_id)
             return {}
     
     def start_container(self, container_id: str) -> bool:
@@ -600,7 +628,7 @@ class DockerService:
             container.start()
             return True
         except Exception as e:
-            app_logger.error(f"Error starting container: {e}")
+            log_service_error("start_container", e, container_id=container_id)
             return False
     
     def stop_container(self, container_id: str) -> bool:
@@ -614,7 +642,7 @@ class DockerService:
             container.stop()
             return True
         except Exception as e:
-            app_logger.error(f"Error stopping container: {e}")
+            log_service_error("stop_container", e, container_id=container_id)
             return False
 
 
