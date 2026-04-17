@@ -192,7 +192,7 @@ class DockerService:
     ) -> List[Dict[str, Any]]:
         """获取容器日志（支持时间筛选和分页）"""
         if not self.docker_available:
-            return self._get_mock_logs(container_id, since, until, tail, limit, before)
+            return self._get_mock_logs(container_id, since, until, tail, limit, before, search)
         
         try:
             container = self.client.containers.get(container_id)
