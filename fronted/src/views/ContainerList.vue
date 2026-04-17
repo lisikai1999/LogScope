@@ -39,7 +39,6 @@
                 <input
                   type="checkbox"
                   v-model="showAll"
-                  @change="fetchContainers"
                 />
                 <span>显示全部容器</span>
               </label>
@@ -71,12 +70,12 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-if="filteredContainers.length === 0">
+                <tr v-if="total === 0">
                   <td colspan="7" class="empty-state">
                     {{ searchQuery ? '没有找到匹配的容器' : '暂无容器' }}
                   </td>
                 </tr>
-                <tr v-for="container in filteredContainers" :key="container.id">
+                <tr v-for="container in containers" :key="container.id">
                   <td>
                     <div
                       class="status-dot"
@@ -109,7 +108,26 @@
               </tbody>
             </table>
             <div class="table-footer">
-              共 {{ filteredContainers.length }} 个容器
+              <span>共 {{ total }} 个容器</span>
+              <div v-if="totalPages > 1" class="pagination">
+                <button
+                  class="pagination-btn"
+                  @click="prevPage"
+                  :disabled="currentPage === 1"
+                >
+                  上一页
+                </button>
+                <span class="pagination-info">
+                  第 {{ currentPage }} / {{ totalPages }} 页
+                </span>
+                <button
+                  class="pagination-btn"
+                  @click="nextPage"
+                  :disabled="currentPage === totalPages"
+                >
+                  下一页
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -119,7 +137,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import axios from 'axios'
 
 const containers = ref([])
@@ -128,27 +146,32 @@ const error = ref(null)
 const searchQuery = ref('')
 const showAll = ref(false)
 
-const filteredContainers = computed(() => {
-  const query = searchQuery.value.toLowerCase()
-  return containers.value.filter(container => {
-    const name = getContainerName(container.names).toLowerCase()
-    return (
-      name.includes(query) ||
-      container.image.toLowerCase().includes(query) ||
-      container.id.toLowerCase().includes(query)
-    )
-  })
-})
+const currentPage = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+const totalPages = ref(0)
 
 const fetchContainers = async () => {
   try {
     loading.value = true
     error.value = null
-    const response = await axios.get('/api/containers', {
-      params: { all: showAll.value }
-    })
+    
+    const params = {
+      all_containers: showAll.value,
+      page: currentPage.value,
+      page_size: pageSize.value
+    }
+    
+    if (searchQuery.value && searchQuery.value.trim()) {
+      params.search = searchQuery.value.trim()
+    }
+    
+    const response = await axios.get('/api/containers', { params })
+    
     if (response.data.success) {
       containers.value = response.data.data
+      total.value = response.data.total
+      totalPages.value = response.data.total_pages
     } else {
       error.value = response.data.error || '获取容器列表失败'
     }
@@ -176,6 +199,49 @@ const getStatusClass = (state) => {
   }
   return classes[state] || 'status-unknown'
 }
+
+const goToPage = (page) => {
+  if (page >= 1 && page <= totalPages.value) {
+    currentPage.value = page
+  }
+}
+
+const nextPage = () => {
+  if (currentPage.value < totalPages.value) {
+    currentPage.value++
+    fetchContainers()
+  }
+}
+
+const prevPage = () => {
+  if (currentPage.value > 1) {
+    currentPage.value--
+    fetchContainers()
+  }
+}
+
+watch(showAll, (newValue) => {
+  console.log('[DEBUG] showAll changed to:', newValue)
+  currentPage.value = 1
+  fetchContainers()
+})
+
+let searchDebounceTimer = null
+watch(searchQuery, () => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+  }
+  searchDebounceTimer = setTimeout(() => {
+    currentPage.value = 1
+    fetchContainers()
+  }, 300)
+})
+
+watch(currentPage, () => {
+  if (currentPage.value > totalPages.value && totalPages.value > 0) {
+    currentPage.value = totalPages.value
+  }
+})
 
 onMounted(() => {
   fetchContainers()
@@ -436,5 +502,47 @@ onMounted(() => {
   margin-top: 1rem;
   font-size: 0.875rem;
   color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pagination-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  transition: all 0.2s;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background-color: var(--bg-secondary);
+  border-color: var(--primary-color);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  padding: 0 0.5rem;
 }
 </style>

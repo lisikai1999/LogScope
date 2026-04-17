@@ -142,23 +142,47 @@
             </div>
           </div>
 
-          <!-- Error Message -->
+          <!-- Error Message with Retry -->
           <div v-if="error" class="error-message">
-            {{ error }}
+            <div class="error-content">
+              <span class="error-text">{{ error }}</span>
+              <button class="btn btn-sm btn-error-retry" @click="retryFetch">
+                重试
+              </button>
+            </div>
           </div>
 
           <!-- Logs Display -->
-          <div class="logs-container">
-            <div v-if="loading" class="loading">
+          <div 
+            class="logs-container" 
+            ref="logsContainerRef"
+          >
+            <!-- Initial Loading State -->
+            <div v-if="loading && logs.length === 0" class="loading">
               <div v-for="i in 10" :key="i" class="skeleton"></div>
             </div>
-            <div v-else-if="filteredLogs.length === 0" class="empty-state">
+            
+            <!-- Empty State -->
+            <div v-else-if="filteredLogs.length === 0 && !loading" class="empty-state">
               没有找到日志
             </div>
+            
+            <!-- Logs List -->
             <div v-else class="logs-list">
+              <!-- Load Older Trigger (at top) -->
+              <div ref="loadOlderTrigger" class="load-trigger">
+                <div v-if="loadingOlder" class="loading-more">
+                  <div class="loading-spinner"></div>
+                  <span>加载更早的日志...</span>
+                </div>
+                <div v-else-if="!hasOlder && logs.length > 0" class="no-more-logs">
+                  已加载全部历史日志
+                </div>
+              </div>
+              
               <div
                 v-for="(log, index) in filteredLogs"
-                :key="index"
+                :key="`${log.timestamp}-${index}`"
                 class="log-entry"
                 :class="`log-${log.stream}`"
               >
@@ -172,10 +196,29 @@
                   {{ log.message }}
                 </div>
               </div>
+              
+              <!-- Load Newer Trigger (at bottom) -->
+              <div ref="loadNewerTrigger" class="load-trigger">
+                <div v-if="loadingNewer" class="loading-more">
+                  <div class="loading-spinner"></div>
+                  <span>加载更新的日志...</span>
+                </div>
+              </div>
             </div>
-            <div class="logs-footer">
-              共 {{ filteredLogs.length }} 条日志
-            </div>
+          </div>
+          
+          <!-- Logs Footer -->
+          <div class="logs-footer">
+            <span>共 {{ filteredLogs.length }} 条日志</span>
+            <span v-if="hasNewer" class="has-more-indicator">
+              (向下滚动加载更新的日志)
+            </span>
+            <span v-else-if="hasOlder" class="has-more-indicator">
+              (向上滚动加载更早的日志)
+            </span>
+            <span v-else-if="autoRefresh" class="auto-refresh-indicator">
+              (自动刷新中)
+            </span>
           </div>
         </div>
       </div>
@@ -184,7 +227,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
 
@@ -194,9 +237,18 @@ const containerId = ref(route.params.id)
 const containerInfo = ref(null)
 const logs = ref([])
 const loading = ref(true)
+const loadingOlder = ref(false)
+const loadingNewer = ref(false)
 const error = ref(null)
+const hasOlder = ref(true)
+const hasNewer = ref(false)
+const logsContainerRef = ref(null)
+const loadOlderTrigger = ref(null)
+const loadNewerTrigger = ref(null)
 
-// 筛选条件
+const PAGE_SIZE = 1000
+const MAX_RETRY_COUNT = 3
+
 const sinceTime = ref('')
 const untilTime = ref('')
 const tailCount = ref(null)
@@ -204,10 +256,12 @@ const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
 
-// 追踪最后一条日志的时间戳，用于增量查询
-let lastLogTimestamp = 0
-
+let currentNextToken = null
+let currentPrevToken = null
 let refreshInterval = null
+let olderObserver = null
+let newerObserver = null
+let retryCount = 0
 
 const filteredLogs = computed(() => {
   return logs.value.filter(log => {
@@ -232,27 +286,32 @@ const fetchLogs = async () => {
   try {
     loading.value = true
     logs.value = []
-    lastLogTimestamp = 0
+    currentNextToken = null
+    currentPrevToken = null
     error.value = null
+    hasOlder.value = true
+    hasNewer.value = false
+    retryCount = 0
 
     const params = {}
 
-    // 转换时间戳
     if (sinceTime.value) {
       params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
     }
-    if (tailCount.value) {
+    
+    const useLegacyTailMode = tailCount.value !== null
+    
+    if (useLegacyTailMode) {
       params.tail = tailCount.value
-    }
-    // 如果没有设置tail条件，默认获取最后 100 行
-    if (!sinceTime.value && !untilTime.value && !tailCount.value) {
-      params.tail = 100
+    } else {
+      params.start_from_head = true
+      params.limit = PAGE_SIZE
     }
 
-    console.log('Manual query params:', params)
+    console.log('Fetch logs params:', params)
 
     const response = await axios.get(
       `/api/containers/${containerId.value}/logs`,
@@ -261,22 +320,292 @@ const fetchLogs = async () => {
 
     if (response.data.success) {
       logs.value = response.data.data
-      if (logs.value.length > 0) {
-        lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
+      
+      if (useLegacyTailMode) {
+        if (params.tail || params.limit) {
+          hasOlder.value = response.data.has_more !== false
+        } else {
+          hasOlder.value = false
+        }
+        hasNewer.value = false
+      } else {
+        currentNextToken = response.data.next_token || null
+        currentPrevToken = response.data.prev_token || null
+        hasNewer.value = response.data.has_more_forward === true
+        hasOlder.value = response.data.has_more_backward === true
       }
+      
+      await nextTick()
+      if (useLegacyTailMode) {
+        scrollToBottom()
+      } else {
+        scrollToTop()
+      }
+      
+      retryCount = 0
     } else {
       error.value = response.data.error || '获取日志失败'
     }
   } catch (err) {
     error.value = err.message || '获取日志失败'
+    console.error('Fetch logs error:', err)
   } finally {
     loading.value = false
   }
 }
 
+const fetchOlderLogs = async () => {
+  if (loadingOlder.value || !hasOlder.value) {
+    return
+  }
+
+  const useLegacyTailMode = tailCount.value !== null
+  
+  if (useLegacyTailMode) {
+    const firstLogTimestamp = logs.value.length > 0 ? logs.value[0].timestamp : 0
+    if (firstLogTimestamp === 0) return
+    
+    try {
+      loadingOlder.value = true
+
+      const params = {}
+      
+      if (sinceTime.value) {
+        params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+      }
+      
+      params.until = firstLogTimestamp
+      params.tail = PAGE_SIZE
+
+      console.log('Fetch older logs (legacy) params:', params)
+
+      const response = await axios.get(
+        `/api/containers/${containerId.value}/logs`,
+        { params }
+      )
+
+      if (response.data.success) {
+        const olderLogs = response.data.data
+        
+        if (olderLogs.length > 0) {
+          const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+          const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+          
+          if (uniqueLogs.length > 0) {
+            const scrollTopBefore = logsContainerRef.value?.scrollTop || 0
+            const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
+            
+            logs.value = [...uniqueLogs, ...logs.value]
+            
+            await nextTick()
+            
+            if (logsContainerRef.value) {
+              const scrollHeightAfter = logsContainerRef.value.scrollHeight
+              const heightDiff = scrollHeightAfter - scrollHeightBefore
+              logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
+            }
+          }
+          
+          hasOlder.value = response.data.has_more !== false && uniqueLogs.length > 0
+        } else {
+          hasOlder.value = false
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching older logs:', err)
+    } finally {
+      loadingOlder.value = false
+    }
+    return
+  }
+
+  if (!currentPrevToken) {
+    hasOlder.value = false
+    return
+  }
+
+  try {
+    loadingOlder.value = true
+
+    const params = {
+      next_token: currentPrevToken,
+      direction: 'backward',
+      limit: PAGE_SIZE
+    }
+    
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
+    if (untilTime.value) {
+      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+
+    console.log('Fetch older logs params:', params)
+
+    const response = await axios.get(
+      `/api/containers/${containerId.value}/logs`,
+      { params }
+    )
+
+    if (response.data.success) {
+      const olderLogs = response.data.data
+      
+      currentPrevToken = response.data.prev_token || null
+      currentNextToken = response.data.next_token || null
+      hasOlder.value = response.data.has_more_backward === true
+      hasNewer.value = response.data.has_more_forward === true || hasNewer.value
+      
+      if (olderLogs.length > 0) {
+        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+        const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+        
+        if (uniqueLogs.length > 0) {
+          const scrollTopBefore = logsContainerRef.value?.scrollTop || 0
+          const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
+          
+          logs.value = [...uniqueLogs, ...logs.value]
+          
+          await nextTick()
+          
+          if (logsContainerRef.value) {
+            const scrollHeightAfter = logsContainerRef.value.scrollHeight
+            const heightDiff = scrollHeightAfter - scrollHeightBefore
+            logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching older logs:', err)
+  } finally {
+    loadingOlder.value = false
+  }
+}
+
+const fetchNewerLogs = async () => {
+  if (loadingNewer.value) {
+    return
+  }
+
+  const useLegacyTailMode = tailCount.value !== null
+  
+  if (useLegacyTailMode) {
+    const lastLogTimestamp = logs.value.length > 0 ? logs.value[logs.value.length - 1].timestamp : 0
+    if (lastLogTimestamp === 0) return
+    
+    try {
+      loadingNewer.value = true
+
+      const params = {
+        since: lastLogTimestamp
+      }
+
+      if (untilTime.value) {
+        params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+      }
+
+      const response = await axios.get(
+        `/api/containers/${containerId.value}/logs`,
+        { params }
+      )
+
+      if (response.data.success) {
+        const newerLogs = response.data.data
+        
+        if (newerLogs.length > 0) {
+          const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+          const uniqueLogs = newerLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+          
+          if (uniqueLogs.length > 0) {
+            const container = logsContainerRef.value
+            const isAtBottom = container 
+              ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+              : false
+            
+            logs.value = [...logs.value, ...uniqueLogs]
+            
+            if (isAtBottom) {
+              await nextTick()
+              scrollToBottom()
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching newer logs:', err)
+    } finally {
+      loadingNewer.value = false
+    }
+    return
+  }
+
+  if (!currentNextToken) {
+    hasNewer.value = false
+    return
+  }
+
+  try {
+    loadingNewer.value = true
+
+    const params = {
+      next_token: currentNextToken,
+      direction: 'forward',
+      limit: PAGE_SIZE
+    }
+    
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
+    if (untilTime.value) {
+      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+
+    console.log('Fetch newer logs params:', params)
+
+    const response = await axios.get(
+      `/api/containers/${containerId.value}/logs`,
+      { params }
+    )
+
+    if (response.data.success) {
+      const newerLogs = response.data.data
+      
+      currentNextToken = response.data.next_token || null
+      currentPrevToken = response.data.prev_token || null
+      hasNewer.value = response.data.has_more_forward === true
+      hasOlder.value = response.data.has_more_backward === true || hasOlder.value
+      
+      if (newerLogs.length > 0) {
+        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+        const uniqueLogs = newerLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+        
+        if (uniqueLogs.length > 0) {
+          const container = logsContainerRef.value
+          const isAtBottom = container 
+            ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+            : false
+          
+          logs.value = [...logs.value, ...uniqueLogs]
+          
+          if (isAtBottom) {
+            await nextTick()
+            scrollToBottom()
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching newer logs:', err)
+  } finally {
+    loadingNewer.value = false
+  }
+}
+
 const fetchLogsAuto = async () => {
   try {
-    if (lastLogTimestamp === 0) return
+    if (logs.value.length === 0) return
+    
+    const lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
     
     const params = { since: lastLogTimestamp }
 
@@ -289,17 +618,91 @@ const fetchLogsAuto = async () => {
       const newLogs = response.data.data
       
       if (logs.value.length > 0) {
-        // 增量追加（避免重复）
         const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
         const uniqueLogs = newLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
         if (uniqueLogs.length > 0) {
+          const container = logsContainerRef.value
+          const isAtBottom = container 
+            ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+            : false
+          
           logs.value.push(...uniqueLogs)
-          lastLogTimestamp = uniqueLogs[uniqueLogs.length - 1].timestamp
+          
+          if (isAtBottom) {
+            await nextTick()
+            scrollToBottom()
+          }
         }
       }
     }
   } catch (err) {
     console.error('Auto-refresh error:', err)
+  }
+}
+
+const retryFetch = async () => {
+  if (retryCount < MAX_RETRY_COUNT) {
+    retryCount++
+    error.value = null
+    await fetchLogs()
+  } else {
+    error.value = `重试 ${MAX_RETRY_COUNT} 次后仍然失败，请稍后再试`
+  }
+}
+
+const setupObservers = () => {
+  if (!window.IntersectionObserver) {
+    return
+  }
+
+  if (olderObserver) {
+    olderObserver.disconnect()
+  }
+  
+  if (newerObserver) {
+    newerObserver.disconnect()
+  }
+
+  if (loadOlderTrigger.value) {
+    olderObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && hasOlder.value && !loadingOlder.value) {
+          fetchOlderLogs()
+        }
+      })
+    }, {
+      root: logsContainerRef.value,
+      rootMargin: '100px',
+      threshold: 0.1
+    })
+    olderObserver.observe(loadOlderTrigger.value)
+  }
+
+  if (loadNewerTrigger.value) {
+    newerObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting && hasNewer.value && !loadingNewer.value && !autoRefresh.value) {
+          fetchNewerLogs()
+        }
+      })
+    }, {
+      root: logsContainerRef.value,
+      rootMargin: '100px',
+      threshold: 0.1
+    })
+    newerObserver.observe(loadNewerTrigger.value)
+  }
+}
+
+const scrollToBottom = () => {
+  if (logsContainerRef.value) {
+    logsContainerRef.value.scrollTop = logsContainerRef.value.scrollHeight
+  }
+}
+
+const scrollToTop = () => {
+  if (logsContainerRef.value) {
+    logsContainerRef.value.scrollTop = 0
   }
 }
 
@@ -342,7 +745,7 @@ const setTimeRange = (range) => {
   }
 
   tailCount.value = null
-  fetchLogs(false)
+  fetchLogs()
 }
 
 const formatDateTimeLocal = (date) => {
@@ -363,11 +766,10 @@ const clearFilters = () => {
   fetchLogs()
 }
 
-// 自动刷新
 watch(autoRefresh, (newValue) => {
   if (newValue) {
     refreshInterval = setInterval(() => {
-      fetchLogsAuto()  // 调用自动刷新函数
+      fetchLogsAuto()
     }, 1000)
   } else {
     if (refreshInterval) {
@@ -377,6 +779,12 @@ watch(autoRefresh, (newValue) => {
   }
 })
 
+watch([logs, hasOlder, hasNewer], () => {
+  nextTick(() => {
+    setupObservers()
+  })
+}, { deep: true })
+
 onMounted(() => {
   fetchContainerInfo()
   fetchLogs()
@@ -385,6 +793,12 @@ onMounted(() => {
 onUnmounted(() => {
   if (refreshInterval) {
     clearInterval(refreshInterval)
+  }
+  if (olderObserver) {
+    olderObserver.disconnect()
+  }
+  if (newerObserver) {
+    newerObserver.disconnect()
   }
 })
 </script>
@@ -612,6 +1026,16 @@ onUnmounted(() => {
   border-color: var(--success-color);
 }
 
+.btn-error-retry {
+  background-color: var(--error-color);
+  color: white;
+  border-color: var(--error-color);
+}
+
+.btn-error-retry:hover {
+  background-color: #dc2626;
+}
+
 .error-message {
   background-color: #fef2f2;
   border: 1px solid #fecaca;
@@ -621,12 +1045,59 @@ onUnmounted(() => {
   margin-bottom: 1rem;
 }
 
+.error-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.error-text {
+  flex: 1;
+}
+
 .logs-container {
   background-color: #1e1e1e;
   border-radius: 0.5rem;
   overflow: hidden;
   max-height: 600px;
   overflow-y: auto;
+}
+
+.load-trigger {
+  min-height: 20px;
+}
+
+.loading-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1rem;
+  color: #888;
+  font-size: 0.875rem;
+}
+
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #3d3d3d;
+  border-top-color: var(--primary-color);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.no-more-logs {
+  text-align: center;
+  padding: 0.75rem;
+  color: #666;
+  font-size: 0.75rem;
 }
 
 .loading {
@@ -702,11 +1173,22 @@ onUnmounted(() => {
   background-color: #2d2d2d;
   color: #888;
   font-size: 0.875rem;
-  text-align: right;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   border-top: 1px solid #3d3d3d;
 }
 
-/* 滚动条样式 */
+.has-more-indicator {
+  color: var(--primary-color);
+  font-size: 0.75rem;
+}
+
+.auto-refresh-indicator {
+  color: var(--success-color);
+  font-size: 0.75rem;
+}
+
 .logs-container::-webkit-scrollbar {
   width: 8px;
 }
