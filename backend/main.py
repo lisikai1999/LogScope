@@ -1,9 +1,18 @@
 import traceback
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from typing import Optional, List
 from docker_service import docker_service
 from logger import app_logger
+from exceptions import (
+    AppException,
+    ContainerNotFoundError,
+    InvalidParameterError,
+    DockerServiceError,
+    ContainerOperationError,
+    LogFetchError
+)
 
 app = FastAPI(title="Docker 日志查看器 API", version="1.0.0")
 
@@ -15,6 +24,47 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(AppException)
+async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
+    """自定义异常处理器"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error_code": exc.error_code,
+            "message": exc.message
+        }
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """HTTP 异常处理器"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "error_code": f"HTTP_{exc.status_code}",
+            "message": exc.detail
+        }
+    )
+
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """通用异常处理器"""
+    app_logger.error(f"[Unhandled Exception] {type(exc).__name__}: {str(exc)}")
+    app_logger.error(f"Stack trace:\n{traceback.format_exc()}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error_code": "INTERNAL_ERROR",
+            "message": "服务器内部错误"
+        }
+    )
 
 
 def log_error(endpoint: str, error: Exception, **kwargs):
@@ -63,6 +113,8 @@ async def list_containers(
             "page_size": result['page_size'],
             "total_pages": result['total_pages']
         }
+    except AppException:
+        raise
     except Exception as e:
         log_error(
             "list_containers", e,
@@ -71,7 +123,7 @@ async def list_containers(
             page_size=page_size,
             search=search
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise
 
 
 @app.get("/api/containers/{container_id}/logs")
@@ -125,6 +177,8 @@ async def get_container_logs(
             "has_more_backward": has_more_backward,
             "has_more": has_more_forward
         }
+    except AppException:
+        raise
     except Exception as e:
         log_error(
             "get_container_logs", e,
@@ -138,7 +192,7 @@ async def get_container_logs(
             direction=direction,
             search=search
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise
 
 
 @app.get("/api/containers/{container_id}/info")
@@ -150,9 +204,11 @@ async def get_container_info(container_id: str):
             "success": True,
             "data": info
         }
+    except AppException:
+        raise
     except Exception as e:
         log_error("get_container_info", e, container_id=container_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise
 
 
 @app.post("/api/containers/{container_id}/start")
@@ -162,11 +218,13 @@ async def start_container(container_id: str):
         success = docker_service.start_container(container_id)
         return {
             "success": success,
-            "message": "容器启动成功" if success else "容器启动失败"
+            "message": "容器启动成功"
         }
+    except AppException:
+        raise
     except Exception as e:
         log_error("start_container", e, container_id=container_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise
 
 
 @app.post("/api/containers/{container_id}/stop")
@@ -176,11 +234,13 @@ async def stop_container(container_id: str):
         success = docker_service.stop_container(container_id)
         return {
             "success": success,
-            "message": "容器停止成功" if success else "容器停止失败"
+            "message": "容器停止成功"
         }
+    except AppException:
+        raise
     except Exception as e:
         log_error("stop_container", e, container_id=container_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise
 
 
 if __name__ == "__main__":
