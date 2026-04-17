@@ -75,7 +75,7 @@
                     {{ searchQuery ? '没有找到匹配的容器' : '暂无容器' }}
                   </td>
                 </tr>
-                <tr v-for="container in filteredContainers" :key="container.id">
+                <tr v-for="container in paginatedContainers" :key="container.id">
                   <td>
                     <div
                       class="status-dot"
@@ -108,7 +108,26 @@
               </tbody>
             </table>
             <div class="table-footer">
-              共 {{ filteredContainers.length }} 个容器
+              <span>共 {{ filteredContainers.length }} 个容器</span>
+              <div v-if="totalPages > 1" class="pagination">
+                <button
+                  class="pagination-btn"
+                  @click="prevPage"
+                  :disabled="currentPage === 1"
+                >
+                  上一页
+                </button>
+                <span class="pagination-info">
+                  第 {{ currentPage }} / {{ totalPages }} 页
+                </span>
+                <button
+                  class="pagination-btn"
+                  @click="nextPage"
+                  :disabled="currentPage === totalPages"
+                >
+                  下一页
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -127,6 +146,9 @@ const error = ref(null)
 const searchQuery = ref('')
 const showAll = ref(false)
 
+const currentPage = ref(1)
+const pageSize = ref(20)
+
 const filteredContainers = computed(() => {
   const query = searchQuery.value.toLowerCase()
   return containers.value.filter(container => {
@@ -137,6 +159,16 @@ const filteredContainers = computed(() => {
       container.id.toLowerCase().includes(query)
     )
   })
+})
+
+const totalPages = computed(() => {
+  return Math.ceil(filteredContainers.value.length / pageSize.value)
+})
+
+const paginatedContainers = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  const end = start + pageSize.value
+  return filteredContainers.value.slice(start, end)
 })
 
 const fetchContainers = async () => {
@@ -176,9 +208,38 @@ const getStatusClass = (state) => {
   return classes[state] || 'status-unknown'
 }
 
+const goToPage = (page) => {
+  if (page >= 1 && page <= totalPages.value) {
+    currentPage.value = page
+  }
+}
+
+const nextPage = () => {
+  if (currentPage.value < totalPages.value) {
+    currentPage.value++
+  }
+}
+
+const prevPage = () => {
+  if (currentPage.value > 1) {
+    currentPage.value--
+  }
+}
+
 watch(showAll, (newValue) => {
   console.log('[DEBUG] showAll changed to:', newValue)
+  currentPage.value = 1
   fetchContainers()
+})
+
+watch(searchQuery, () => {
+  currentPage.value = 1
+})
+
+watch(filteredContainers, () => {
+  if (currentPage.value > totalPages.value && totalPages.value > 0) {
+    currentPage.value = totalPages.value
+  }
 })
 
 onMounted(() => {
@@ -440,5 +501,47 @@ onMounted(() => {
   margin-top: 1rem;
   font-size: 0.875rem;
   color: var(--text-secondary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pagination-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  transition: all 0.2s;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background-color: var(--bg-secondary);
+  border-color: var(--primary-color);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  padding: 0 0.5rem;
 }
 </style>
