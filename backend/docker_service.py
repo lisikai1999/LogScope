@@ -541,15 +541,50 @@ class DockerService:
         if not self.docker_available:
             # 返回模拟数据
             return {
+                'id': 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890',
                 'names': ['web-app'],
                 'image': 'nginx:latest',
                 'state': 'running',
-                'status': 'Up 2 hours'
+                'status': 'Up 2 hours',
+                'created': int(time.time() - 7200)
             }
         
         try:
             container = self.client.containers.get(container_id)
-            return container.attrs
+            
+            # 获取镜像名称（与 list_containers 保持一致）
+            image_name = '<unknown>'
+            try:
+                if container.image:
+                    if container.image.tags and len(container.image.tags) > 0:
+                        image_name = container.image.tags[0]
+                    else:
+                        image_id = container.attrs.get('Image', '')
+                        if image_id.startswith('sha256:'):
+                            image_name = image_id[7:19]
+                        else:
+                            image_name = image_id[:12] if image_id else '<unknown>'
+            except Exception as img_e:
+                app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
+                config_image = container.attrs.get('Config', {}).get('Image', '')
+                if config_image:
+                    image_name = config_image
+                else:
+                    image_id = container.attrs.get('Image', '')
+                    if image_id.startswith('sha256:'):
+                        image_name = image_id[7:19]
+                    else:
+                        image_name = image_id[:12] if image_id else '<unknown>'
+            
+            # 返回与 list_containers 相同格式的数据
+            return {
+                'id': container.id,
+                'names': [container.name.replace('/', '')],
+                'image': image_name,
+                'state': container.status,
+                'status': container.status,
+                'created': container.attrs.get('Created', 0)
+            }
         except Exception as e:
             app_logger.error(f"Error getting container info: {e}")
             return {}

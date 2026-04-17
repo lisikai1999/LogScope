@@ -302,7 +302,7 @@ const filteredLogs = computed(() => {
 
 const fetchContainerInfo = async () => {
   try {
-    const response = await axios.get(`/api/containers/${containerId.value}`)
+    const response = await axios.get(`/api/containers/${containerId.value}/info`)
     if (response.data.success) {
       containerInfo.value = response.data.data
     }
