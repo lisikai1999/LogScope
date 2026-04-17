@@ -1,15 +1,9 @@
 import os
 import time
-import logging
 import docker
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock"
 
@@ -24,7 +18,7 @@ class DockerService:
             try:
                 self.client = docker.from_env()
             except Exception as e:
-                logger.error(f"Docker initialization failed: {e}")
+                print(f"Docker initialization failed: {e}")
                 self.docker_available = False
     
     def _check_docker_available(self) -> bool:
@@ -74,7 +68,7 @@ class DockerService:
                                 else:
                                     image_name = image_id[:12] if image_id else '<unknown>'
                     except Exception as img_e:
-                        logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
+                        print(f"[DEBUG] Failed to get image info for container {container.id}: {img_e}")
                         config_image = container.attrs.get('Config', {}).get('Image', '')
                         if config_image:
                             image_name = config_image
@@ -94,10 +88,10 @@ class DockerService:
                         'created': container.attrs['Created']
                     })
                 except Exception as e:
-                    logger.error(f"Failed to process container {container.id}: {e}")
+                    print(f"[ERROR] Failed to process container {container.id}: {e}")
             return self._paginate_containers(result, page, page_size, search)
         except Exception as e:
-            logger.error(f"Error listing containers: {e}")
+            print(f"Error listing containers: {e}")
             return {
                 'total': 0,
                 'page': page,
@@ -248,7 +242,7 @@ class DockerService:
                     try:
                         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
                     except:
-                        logger.debug(f"时间戳解析异常: {timestamp_str}")
+                        print("断点1====>时间戳解析异常:", timestamp_str)
                         continue
                     
                     header = line[:8]
@@ -259,12 +253,12 @@ class DockerService:
                         'message': message
                     })
                 except Exception as e:
-                    logger.error(f"Error parsing log line: {e}")
+                    print(f"Error parsing log line: {e}")
                     continue
             
             return entries
         except Exception as e:
-            logger.error(f"Error getting logs: {e}")
+            print(f"Error getting logs: {e}")
             raise e
     
     def get_container_logs_paginated(
@@ -315,7 +309,7 @@ class DockerService:
                 all_logs, effective_limit, start_from_head, next_token, direction
             )
         except Exception as e:
-            logger.error(f"Error getting paginated logs: {e}")
+            print(f"Error getting paginated logs: {e}")
             raise e
     
     def _paginate_logs(
@@ -532,13 +526,13 @@ class DockerService:
             container = self.client.containers.get(container_id)
             return container.attrs
         except Exception as e:
-            logger.error(f"Error getting container info: {e}")
+            print(f"Error getting container info: {e}")
             return {}
     
     def start_container(self, container_id: str) -> bool:
         """启动容器"""
         if not self.docker_available:
-            logger.warning("Docker is not available in demo mode")
+            print("Docker is not available in demo mode")
             return False
         
         try:
@@ -546,13 +540,13 @@ class DockerService:
             container.start()
             return True
         except Exception as e:
-            logger.error(f"Error starting container: {e}")
+            print(f"Error starting container: {e}")
             return False
     
     def stop_container(self, container_id: str) -> bool:
         """停止容器"""
         if not self.docker_available:
-            logger.warning("Docker is not available in demo mode")
+            print("Docker is not available in demo mode")
             return False
         
         try:
@@ -560,7 +554,7 @@ class DockerService:
             container.stop()
             return True
         except Exception as e:
-            logger.error(f"Error stopping container: {e}")
+            print(f"Error stopping container: {e}")
             return False
 
 
