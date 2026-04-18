@@ -1462,7 +1462,7 @@ onUnmounted(() => {
   word-break: break-word;
 }
 
-.search-highlight {
+:deep(.search-highlight) {
   background-color: #fbbf24;
   color: #1e1e1e;
   padding: 0 2px;
