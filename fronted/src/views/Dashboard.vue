@@ -23,7 +23,7 @@
               <input
                 type="checkbox"
                 v-model="showAll"
-                @change="fetchData"
+                @change="fetchStats"
               />
               <span>显示全部容器</span>
             </label>
@@ -264,7 +264,7 @@ const fetchStats = async () => {
 const fetchRuntimeStats = async () => {
   try {
     const response = await axios.get('/api/dashboard/runtime', {
-      params: { all_containers: showAll.value }
+      params: { all_containers: true }
     })
     if (response.data.success) {
       runtimeStats.value = response.data.data
