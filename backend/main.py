@@ -243,6 +243,60 @@ async def stop_container(container_id: str):
         raise
 
 
+@app.get("/api/dashboard/stats")
+async def get_dashboard_stats(
+    all_containers: bool = Query(False, description="是否包含已停止的容器")
+):
+    """获取 Dashboard 统计信息（所有容器的资源使用情况）"""
+    try:
+        app_logger.debug(f"获取 Dashboard 统计信息: all_containers={all_containers}")
+        stats = docker_service.get_all_containers_stats(all_containers=all_containers)
+        return {
+            "success": True,
+            "data": stats
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_dashboard_stats", e, all_containers=all_containers)
+        raise
+
+
+@app.get("/api/dashboard/runtime")
+async def get_dashboard_runtime(
+    all_containers: bool = Query(False, description="是否包含已停止的容器")
+):
+    """获取容器运行时长统计"""
+    try:
+        app_logger.debug(f"获取容器运行时长统计: all_containers={all_containers}")
+        stats = docker_service.get_containers_runtime_stats(all_containers=all_containers)
+        return {
+            "success": True,
+            "data": stats
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_dashboard_runtime", e, all_containers=all_containers)
+        raise
+
+
+@app.get("/api/containers/{container_id}/stats")
+async def get_container_stats_endpoint(container_id: str):
+    """获取单个容器的统计信息"""
+    try:
+        stats = docker_service.get_container_stats(container_id)
+        return {
+            "success": True,
+            "data": stats
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_container_stats", e, container_id=container_id)
+        raise
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

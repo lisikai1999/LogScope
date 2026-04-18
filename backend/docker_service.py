@@ -684,6 +684,390 @@ class DockerService:
             if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
                 raise
             raise ContainerOperationError(f"停止容器失败: {str(e)}")
+    
+    def get_container_stats(self, container_id: str) -> Dict[str, Any]:
+        """获取容器统计信息（CPU、内存、网络 I/O）"""
+        if not self.docker_available:
+            return self._get_mock_container_stats(container_id)
+        
+        try:
+            container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_container_stats", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            if container.status != 'running':
+                return {
+                    'container_id': container_id,
+                    'state': container.status,
+                    'cpu_usage': 0,
+                    'cpu_percent': 0,
+                    'memory_usage': 0,
+                    'memory_limit': 0,
+                    'memory_percent': 0,
+                    'network_rx_bytes': 0,
+                    'network_tx_bytes': 0,
+                    'network_rx_packets': 0,
+                    'network_tx_packets': 0,
+                    'network_rx_errors': 0,
+                    'network_tx_errors': 0,
+                    'network_rx_dropped': 0,
+                    'network_tx_dropped': 0,
+                    'block_read_bytes': 0,
+                    'block_write_bytes': 0
+                }
+            
+            stats = container.stats(stream=False)
+            
+            cpu_delta = stats['cpu_stats']['cpu_usage']['total_usage'] - stats['precpu_stats']['cpu_usage']['total_usage']
+            system_cpu_delta = stats['cpu_stats']['system_cpu_usage'] - stats['precpu_stats']['system_cpu_usage']
+            number_cpus = stats['cpu_stats']['online_cpus']
+            
+            cpu_percent = 0.0
+            if system_cpu_delta > 0:
+                cpu_percent = (cpu_delta / system_cpu_delta) * number_cpus * 100
+            
+            memory_usage = stats['memory_stats']['usage']
+            memory_limit = stats['memory_stats']['limit']
+            memory_percent = 0.0
+            if memory_limit > 0:
+                memory_percent = (memory_usage / memory_limit) * 100
+            
+            network_stats = stats.get('networks', {})
+            total_rx_bytes = 0
+            total_tx_bytes = 0
+            total_rx_packets = 0
+            total_tx_packets = 0
+            total_rx_errors = 0
+            total_tx_errors = 0
+            total_rx_dropped = 0
+            total_tx_dropped = 0
+            
+            for iface, iface_stats in network_stats.items():
+                total_rx_bytes += iface_stats.get('rx_bytes', 0)
+                total_tx_bytes += iface_stats.get('tx_bytes', 0)
+                total_rx_packets += iface_stats.get('rx_packets', 0)
+                total_tx_packets += iface_stats.get('tx_packets', 0)
+                total_rx_errors += iface_stats.get('rx_errors', 0)
+                total_tx_errors += iface_stats.get('tx_errors', 0)
+                total_rx_dropped += iface_stats.get('rx_dropped', 0)
+                total_tx_dropped += iface_stats.get('tx_dropped', 0)
+            
+            block_stats = stats.get('blkio_stats', {})
+            total_block_read = 0
+            total_block_write = 0
+            
+            io_service_bytes_recursive = block_stats.get('io_service_bytes_recursive', [])
+            for io_entry in io_service_bytes_recursive:
+                op = io_entry.get('op', '').lower()
+                value = io_entry.get('value', 0)
+                if op == 'read':
+                    total_block_read += value
+                elif op == 'write':
+                    total_block_write += value
+            
+            image_name = '<unknown>'
+            try:
+                if container.image:
+                    if container.image.tags and len(container.image.tags) > 0:
+                        image_name = container.image.tags[0]
+            except Exception:
+                pass
+            
+            return {
+                'container_id': container_id,
+                'container_name': container.name.replace('/', ''),
+                'image': image_name,
+                'state': container.status,
+                'cpu_usage': cpu_delta,
+                'cpu_percent': round(cpu_percent, 2),
+                'memory_usage': memory_usage,
+                'memory_limit': memory_limit,
+                'memory_percent': round(memory_percent, 2),
+                'network_rx_bytes': total_rx_bytes,
+                'network_tx_bytes': total_tx_bytes,
+                'network_rx_packets': total_rx_packets,
+                'network_tx_packets': total_tx_packets,
+                'network_rx_errors': total_rx_errors,
+                'network_tx_errors': total_tx_errors,
+                'network_rx_dropped': total_rx_dropped,
+                'network_tx_dropped': total_tx_dropped,
+                'block_read_bytes': total_block_read,
+                'block_write_bytes': total_block_write
+            }
+        except Exception as e:
+            log_service_error("get_container_stats", e, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取容器统计信息失败: {str(e)}")
+    
+    def get_all_containers_stats(self, all_containers: bool = False) -> List[Dict[str, Any]]:
+        """获取所有容器的统计信息"""
+        if not self.docker_available:
+            return self._get_mock_all_containers_stats(all_containers)
+        
+        try:
+            containers = self.client.containers.list(all=all_containers)
+            result = []
+            for container in containers:
+                try:
+                    stats = self.get_container_stats(container.id)
+                    result.append(stats)
+                except Exception as e:
+                    log_service_error("get_all_containers_stats", e, container_id=container.id[:12])
+                    image_name = '<unknown>'
+                    try:
+                        if container.image and container.image.tags:
+                            image_name = container.image.tags[0]
+                    except Exception:
+                        pass
+                    
+                    result.append({
+                        'container_id': container.id,
+                        'container_name': container.name.replace('/', ''),
+                        'image': image_name,
+                        'state': container.status,
+                        'cpu_usage': 0,
+                        'cpu_percent': 0,
+                        'memory_usage': 0,
+                        'memory_limit': 0,
+                        'memory_percent': 0,
+                        'network_rx_bytes': 0,
+                        'network_tx_bytes': 0,
+                        'network_rx_packets': 0,
+                        'network_tx_packets': 0,
+                        'network_rx_errors': 0,
+                        'network_tx_errors': 0,
+                        'network_rx_dropped': 0,
+                        'network_tx_dropped': 0,
+                        'block_read_bytes': 0,
+                        'block_write_bytes': 0
+                    })
+            return result
+        except Exception as e:
+            log_service_error("get_all_containers_stats", e)
+            return []
+    
+    def get_containers_runtime_stats(self, all_containers: bool = False) -> Dict[str, Any]:
+        """获取容器运行时长统计"""
+        if not self.docker_available:
+            return self._get_mock_containers_runtime_stats(all_containers)
+        
+        try:
+            containers = self.client.containers.list(all=all_containers)
+            
+            running_count = 0
+            stopped_count = 0
+            paused_count = 0
+            total_count = len(containers)
+            
+            runtime_seconds_list = []
+            created_times = []
+            
+            for container in containers:
+                state = container.status
+                if state == 'running':
+                    running_count += 1
+                    try:
+                        created_str = container.attrs.get('Created', '')
+                        if created_str:
+                            from dateutil import parser
+                            created_time = parser.isoparse(created_str)
+                            current_time = datetime.now().astimezone()
+                            runtime_seconds = (current_time - created_time).total_seconds()
+                            runtime_seconds_list.append(runtime_seconds)
+                            created_times.append(created_time)
+                    except Exception as e:
+                        app_logger.debug(f"Failed to parse container time: {e}")
+                elif state == 'exited':
+                    stopped_count += 1
+                elif state == 'paused':
+                    paused_count += 1
+            
+            stats = {
+                'total_count': total_count,
+                'running_count': running_count,
+                'stopped_count': stopped_count,
+                'paused_count': paused_count,
+                'runtime_stats': {}
+            }
+            
+            if runtime_seconds_list:
+                min_runtime = min(runtime_seconds_list)
+                max_runtime = max(runtime_seconds_list)
+                avg_runtime = sum(runtime_seconds_list) / len(runtime_seconds_list)
+                
+                stats['runtime_stats'] = {
+                    'min_runtime_seconds': int(min_runtime),
+                    'max_runtime_seconds': int(max_runtime),
+                    'avg_runtime_seconds': int(avg_runtime),
+                    'min_runtime_human': self._format_runtime(min_runtime),
+                    'max_runtime_human': self._format_runtime(max_runtime),
+                    'avg_runtime_human': self._format_runtime(avg_runtime)
+                }
+            
+            return stats
+        except Exception as e:
+            log_service_error("get_containers_runtime_stats", e)
+            return {
+                'total_count': 0,
+                'running_count': 0,
+                'stopped_count': 0,
+                'paused_count': 0,
+                'runtime_stats': {}
+            }
+    
+    def _format_runtime(self, seconds: float) -> str:
+        """格式化运行时长为人类可读格式"""
+        seconds = int(seconds)
+        if seconds < 60:
+            return f"{seconds} 秒"
+        elif seconds < 3600:
+            minutes = seconds // 60
+            return f"{minutes} 分钟"
+        elif seconds < 86400:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            if minutes > 0:
+                return f"{hours} 小时 {minutes} 分钟"
+            return f"{hours} 小时"
+        else:
+            days = seconds // 86400
+            hours = (seconds % 86400) // 3600
+            if hours > 0:
+                return f"{days} 天 {hours} 小时"
+            return f"{days} 天"
+    
+    def _get_mock_container_stats(self, container_id: str) -> Dict[str, Any]:
+        """返回模拟的容器统计信息"""
+        import random
+        base_memory = 100 * 1024 * 1024
+        memory_limit = 2 * 1024 * 1024 * 1024
+        memory_usage = base_memory + random.randint(0, 500 * 1024 * 1024)
+        memory_percent = (memory_usage / memory_limit) * 100
+        
+        return {
+            'container_id': container_id,
+            'container_name': 'web-app',
+            'image': 'nginx:latest',
+            'state': 'running',
+            'cpu_usage': random.randint(1000000, 10000000),
+            'cpu_percent': round(random.uniform(0.5, 15.0), 2),
+            'memory_usage': memory_usage,
+            'memory_limit': memory_limit,
+            'memory_percent': round(memory_percent, 2),
+            'network_rx_bytes': random.randint(10 * 1024 * 1024, 500 * 1024 * 1024),
+            'network_tx_bytes': random.randint(5 * 1024 * 1024, 200 * 1024 * 1024),
+            'network_rx_packets': random.randint(10000, 100000),
+            'network_tx_packets': random.randint(5000, 50000),
+            'network_rx_errors': 0,
+            'network_tx_errors': 0,
+            'network_rx_dropped': 0,
+            'network_tx_dropped': 0,
+            'block_read_bytes': random.randint(100 * 1024 * 1024, 1000 * 1024 * 1024),
+            'block_write_bytes': random.randint(50 * 1024 * 1024, 500 * 1024 * 1024)
+        }
+    
+    def _get_mock_all_containers_stats(self, all_containers: bool = False) -> List[Dict[str, Any]]:
+        """返回模拟的所有容器统计信息"""
+        import random
+        
+        mock_containers = [
+            {
+                'container_id': 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890',
+                'container_name': 'web-app',
+                'image': 'nginx:latest',
+                'state': 'running'
+            },
+            {
+                'container_id': 'f1e2d3c4b5a69788695041327958640213579864201357986',
+                'container_name': 'database',
+                'image': 'postgres:15',
+                'state': 'running'
+            },
+            {
+                'container_id': '9a8b7c6d5e4f32102468135790246813579024681357902468',
+                'container_name': 'redis-cache',
+                'image': 'redis:alpine',
+                'state': 'running'
+            }
+        ]
+        
+        if all_containers:
+            mock_containers.append({
+                'container_id': '1234567890abcdef1234567890abcdef1234567890abcdef12',
+                'container_name': 'old-app',
+                'image': 'node:18',
+                'state': 'exited'
+            })
+        
+        result = []
+        for container in mock_containers:
+            if container['state'] == 'running':
+                base_memory = 100 * 1024 * 1024
+                memory_limit = 2 * 1024 * 1024 * 1024
+                memory_usage = base_memory + random.randint(0, 500 * 1024 * 1024)
+                memory_percent = (memory_usage / memory_limit) * 100
+                
+                result.append({
+                    **container,
+                    'cpu_usage': random.randint(1000000, 10000000),
+                    'cpu_percent': round(random.uniform(0.5, 15.0), 2),
+                    'memory_usage': memory_usage,
+                    'memory_limit': memory_limit,
+                    'memory_percent': round(memory_percent, 2),
+                    'network_rx_bytes': random.randint(10 * 1024 * 1024, 500 * 1024 * 1024),
+                    'network_tx_bytes': random.randint(5 * 1024 * 1024, 200 * 1024 * 1024),
+                    'network_rx_packets': random.randint(10000, 100000),
+                    'network_tx_packets': random.randint(5000, 50000),
+                    'network_rx_errors': 0,
+                    'network_tx_errors': 0,
+                    'network_rx_dropped': 0,
+                    'network_tx_dropped': 0,
+                    'block_read_bytes': random.randint(100 * 1024 * 1024, 1000 * 1024 * 1024),
+                    'block_write_bytes': random.randint(50 * 1024 * 1024, 500 * 1024 * 1024)
+                })
+            else:
+                result.append({
+                    **container,
+                    'cpu_usage': 0,
+                    'cpu_percent': 0,
+                    'memory_usage': 0,
+                    'memory_limit': 0,
+                    'memory_percent': 0,
+                    'network_rx_bytes': 0,
+                    'network_tx_bytes': 0,
+                    'network_rx_packets': 0,
+                    'network_tx_packets': 0,
+                    'network_rx_errors': 0,
+                    'network_tx_errors': 0,
+                    'network_rx_dropped': 0,
+                    'network_tx_dropped': 0,
+                    'block_read_bytes': 0,
+                    'block_write_bytes': 0
+                })
+        
+        return result
+    
+    def _get_mock_containers_runtime_stats(self, all_containers: bool = False) -> Dict[str, Any]:
+        """返回模拟的容器运行时长统计"""
+        return {
+            'total_count': 4 if all_containers else 3,
+            'running_count': 3,
+            'stopped_count': 1 if all_containers else 0,
+            'paused_count': 0,
+            'runtime_stats': {
+                'min_runtime_seconds': 7200,
+                'max_runtime_seconds': 86400,
+                'avg_runtime_seconds': 37200,
+                'min_runtime_human': '2 小时',
+                'max_runtime_human': '1 天',
+                'avg_runtime_human': '10 小时 20 分钟'
+            }
+        }
 
 
 # 全局实例
