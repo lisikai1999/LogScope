@@ -1,7 +1,11 @@
+import io
+import csv
+import json
 import traceback
+from datetime import datetime
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Optional, List
 from docker_service import docker_service
 from logger import app_logger
@@ -294,6 +298,120 @@ async def get_container_stats_endpoint(container_id: str):
         raise
     except Exception as e:
         log_error("get_container_stats", e, container_id=container_id)
+        raise
+
+
+def format_log_time(timestamp: int) -> str:
+    """格式化时间戳为可读字符串"""
+    date = datetime.fromtimestamp(timestamp)
+    return date.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def logs_to_txt(logs: List[dict]) -> str:
+    """将日志转换为 TXT 格式"""
+    lines = []
+    for log in logs:
+        timestamp = format_log_time(log['timestamp'])
+        stream = log['stream'].upper()
+        message = log['message']
+        lines.append(f"[{timestamp}] [{stream}] {message}")
+    return '\n'.join(lines)
+
+
+def logs_to_json(logs: List[dict]) -> str:
+    """将日志转换为 JSON 格式"""
+    formatted_logs = []
+    for log in logs:
+        formatted_logs.append({
+            'timestamp': log['timestamp'],
+            'timestamp_formatted': format_log_time(log['timestamp']),
+            'stream': log['stream'],
+            'message': log['message']
+        })
+    return json.dumps(formatted_logs, ensure_ascii=False, indent=2)
+
+
+def logs_to_csv(logs: List[dict]) -> str:
+    """将日志转换为 CSV 格式"""
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['timestamp', 'timestamp_formatted', 'stream', 'message'])
+    for log in logs:
+        writer.writerow([
+            log['timestamp'],
+            format_log_time(log['timestamp']),
+            log['stream'],
+            log['message']
+        ])
+    return output.getvalue()
+
+
+@app.get("/api/containers/{container_id}/logs/export")
+async def export_container_logs(
+    container_id: str,
+    format: str = Query('json', description="导出格式：txt、json、csv"),
+    since: Optional[int] = Query(None, description="起始时间戳（Unix 时间戳，秒）"),
+    until: Optional[int] = Query(None, description="结束时间戳（Unix 时间戳，秒）"),
+    search: Optional[str] = Query(None, description="搜索关键词，用于过滤日志消息内容")
+):
+    """导出容器日志（支持 TXT/JSON/CSV 格式）
+    
+    - 支持与查询日志相同的筛选条件：时间范围、关键词搜索
+    - 导出格式：txt（纯文本）、json（JSON 数组）、csv（逗号分隔值）
+    - 返回文件下载响应
+    """
+    try:
+        app_logger.debug(f"导出日志参数: container_id={container_id}, format={format}, since={since}, until={until}, search={search}")
+        
+        logs = docker_service.get_container_logs(
+            container_id=container_id,
+            since=since,
+            until=until,
+            search=search
+        )
+        
+        logs.sort(key=lambda x: x['timestamp'])
+        
+        format_lower = format.lower()
+        
+        if format_lower == 'txt':
+            content = logs_to_txt(logs)
+            media_type = 'text/plain; charset=utf-8'
+            file_ext = 'txt'
+        elif format_lower == 'csv':
+            content = logs_to_csv(logs)
+            media_type = 'text/csv; charset=utf-8'
+            file_ext = 'csv'
+        else:
+            content = logs_to_json(logs)
+            media_type = 'application/json; charset=utf-8'
+            file_ext = 'json'
+        
+        container_info = docker_service.get_container_info(container_id)
+        container_name = container_info.get('names', [container_id[:12]])[0] if container_info else container_id[:12]
+        
+        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{container_name}_logs_{timestamp_str}.{file_ext}"
+        
+        return StreamingResponse(
+            iter([content.encode('utf-8')]),
+            media_type=media_type,
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Access-Control-Expose-Headers': 'Content-Disposition'
+            }
+        )
+    except AppException:
+        raise
+    except Exception as e:
+        log_error(
+            "export_container_logs", e,
+            container_id=container_id,
+            format=format,
+            since=since,
+            until=until,
+            search=search
+        )
         raise
 
 
