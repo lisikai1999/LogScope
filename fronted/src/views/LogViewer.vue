@@ -120,12 +120,34 @@
             </div>
             <div class="filter-row">
               <div class="filter-group filter-group-full">
-                <label class="filter-label">搜索日志:</label>
+                <div class="search-label-row">
+                  <label class="filter-label">搜索日志:</label>
+                  <button
+                    class="btn btn-sm btn-help"
+                    @click="showSearchHelp = !showSearchHelp"
+                    type="button"
+                  >
+                    {{ showSearchHelp ? '隐藏帮助' : '搜索语法帮助' }}
+                  </button>
+                </div>
+                <div class="search-help-panel" v-if="showSearchHelp">
+                  <div class="search-help-content">
+                    <h4>高级搜索语法</h4>
+                    <ul class="search-help-list">
+                      <li><strong>简单搜索:</strong> <code>error</code> - 搜索包含 "error" 的日志</li>
+                      <li><strong>正则表达式:</strong> <code>/error|warning/i</code> - 使用正则表达式搜索（i 表示不区分大小写）</li>
+                      <li><strong>AND 组合:</strong> <code>error AND warning</code> 或 <code>error && warning</code> - 同时包含两个关键词</li>
+                      <li><strong>OR 组合:</strong> <code>error OR warning</code> 或 <code>error || warning</code> - 包含任一关键词</li>
+                      <li><strong>排除搜索:</strong> <code>-error</code> 或 <code>NOT error</code> - 排除包含 "error" 的日志</li>
+                      <li><strong>组合示例:</strong> <code>(error OR warning) AND critical</code> - 包含 error 或 warning，且包含 critical</li>
+                    </ul>
+                  </div>
+                </div>
                 <div class="search-group">
                   <input
                     type="text"
                     v-model="searchQuery"
-                    placeholder="输入关键词搜索日志内容..."
+                    placeholder="输入关键词搜索... 支持正则、AND/OR 组合"
                     class="filter-input search-input"
                     @keyup.enter="fetchLogs"
                   />
@@ -241,8 +263,7 @@
                 <div class="log-stream">
                   {{ log.stream.toUpperCase() }}
                 </div>
-                <div class="log-message">
-                  {{ log.message }}
+                <div class="log-message" v-html="highlightLogMessage(log)">
                 </div>
               </div>
               
@@ -308,6 +329,7 @@ const autoRefresh = ref(false)
 const searchQuery = ref('')
 const exportFormat = ref('json')
 const exporting = ref(false)
+const showSearchHelp = ref(false)
 
 let currentNextToken = null
 let currentPrevToken = null
@@ -840,6 +862,58 @@ const clearSearch = () => {
   fetchLogs()
 }
 
+const highlightLogMessage = (log) => {
+  if (!log || !log.message) {
+    return ''
+  }
+  
+  const message = log.message
+  const matches = log._matches
+  
+  if (!matches || matches.length === 0) {
+    return escapeHtml(message)
+  }
+  
+  const sortedMatches = [...matches].sort((a, b) => a[0] - b[0])
+  
+  const mergedMatches = []
+  for (const match of sortedMatches) {
+    if (mergedMatches.length === 0) {
+      mergedMatches.push([...match])
+    } else {
+      const last = mergedMatches[mergedMatches.length - 1]
+      if (match[0] <= last[1]) {
+        last[1] = Math.max(last[1], match[1])
+      } else {
+        mergedMatches.push([...match])
+      }
+    }
+  }
+  
+  let result = ''
+  let lastIndex = 0
+  
+  for (const [start, end] of mergedMatches) {
+    if (start > lastIndex) {
+      result += escapeHtml(message.slice(lastIndex, start))
+    }
+    result += '<span class="search-highlight">' + escapeHtml(message.slice(start, end)) + '</span>'
+    lastIndex = end
+  }
+  
+  if (lastIndex < message.length) {
+    result += escapeHtml(message.slice(lastIndex))
+  }
+  
+  return result
+}
+
+const escapeHtml = (text) => {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
 const exportLogs = async () => {
   try {
     exporting.value = true
@@ -1064,6 +1138,58 @@ onUnmounted(() => {
   font-size: 0.875rem;
   font-weight: 500;
   color: var(--text-primary);
+}
+
+.search-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.btn-help {
+  background-color: transparent;
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-help:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.search-help-panel {
+  background-color: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.search-help-content h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.search-help-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: #78350f;
+}
+
+.search-help-list li {
+  margin-bottom: 0.25rem;
+}
+
+.search-help-list code {
+  background-color: #fde68a;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.75rem;
 }
 
 .filter-input {
@@ -1334,6 +1460,14 @@ onUnmounted(() => {
 .log-message {
   flex: 1;
   word-break: break-word;
+}
+
+.search-highlight {
+  background-color: #fbbf24;
+  color: #1e1e1e;
+  padding: 0 2px;
+  border-radius: 2px;
+  font-weight: bold;
 }
 
 .logs-footer {

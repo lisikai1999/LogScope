@@ -1,9 +1,10 @@
 import os
+import re
 import time
 import traceback
 import docker
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from logger import app_logger
 from exceptions import (
     ContainerNotFoundError,
@@ -34,6 +35,197 @@ DEFAULT_DOCKER_HOST = "unix:///var/run/docker.sock"
 
 if not os.environ.get("DOCKER_HOST"):
     os.environ["DOCKER_HOST"] = DEFAULT_DOCKER_HOST
+
+
+class LogSearcher:
+    """日志搜索增强器，支持正则表达式、多条件组合搜索和高亮"""
+    
+    def __init__(self):
+        pass
+    
+    def parse_search_query(self, query: str) -> Dict[str, Any]:
+        """
+        解析搜索查询，支持以下语法：
+        - 简单关键词：error
+        - 正则表达式：/error|warning/i
+        - AND 组合：error AND warning 或 error && warning
+        - OR 组合：error OR warning 或 error || warning
+        - 括号组合：(error OR warning) AND critical
+        - 排除模式：-error 或 NOT error
+        
+        返回解析后的搜索条件
+        """
+        query = query.strip()
+        if not query:
+            return {'type': 'none'}
+        
+        if query.startswith('/') and query.endswith('/'):
+            pattern = query[1:-1]
+            return {
+                'type': 'regex',
+                'pattern': pattern,
+                'flags': 0
+            }
+        elif query.startswith('/') and '/i' in query:
+            match = re.match(r'^/(.+)/i$', query)
+            if match:
+                return {
+                    'type': 'regex',
+                    'pattern': match.group(1),
+                    'flags': re.IGNORECASE
+                }
+        
+        if ' AND ' in query.upper() or ' && ' in query:
+            parts = re.split(r'\s+AND\s+|\s+&&\s+', query, flags=re.IGNORECASE)
+            return {
+                'type': 'and',
+                'conditions': [self.parse_simple_term(p.strip()) for p in parts if p.strip()]
+            }
+        
+        if ' OR ' in query.upper() or ' || ' in query:
+            parts = re.split(r'\s+OR\s+|\s+\|\|\s+', query, flags=re.IGNORECASE)
+            return {
+                'type': 'or',
+                'conditions': [self.parse_simple_term(p.strip()) for p in parts if p.strip()]
+            }
+        
+        return self.parse_simple_term(query)
+    
+    def parse_simple_term(self, term: str) -> Dict[str, Any]:
+        """解析单个搜索词"""
+        term = term.strip()
+        if not term:
+            return {'type': 'none'}
+        
+        if term.startswith('-') or term.upper().startswith('NOT '):
+            if term.startswith('-'):
+                inner_term = term[1:].strip()
+            else:
+                inner_term = term[4:].strip()
+            
+            inner = self.parse_simple_term(inner_term)
+            return {
+                'type': 'not',
+                'condition': inner
+            }
+        
+        if term.startswith('/') and term.endswith('/'):
+            pattern = term[1:-1]
+            return {
+                'type': 'regex',
+                'pattern': pattern,
+                'flags': 0
+            }
+        elif term.startswith('/') and '/i' in term:
+            match = re.match(r'^/(.+)/i$', term)
+            if match:
+                return {
+                    'type': 'regex',
+                    'pattern': match.group(1),
+                    'flags': re.IGNORECASE
+                }
+        
+        return {
+            'type': 'simple',
+            'term': term,
+            'case_sensitive': False
+        }
+    
+    def match_log(self, message: str, condition: Dict[str, Any]) -> Tuple[bool, List[Tuple[int, int]]]:
+        """
+        检查日志消息是否匹配搜索条件
+        返回 (是否匹配, 匹配位置列表)
+        """
+        matches = []
+        
+        if condition['type'] == 'none':
+            return (True, [])
+        
+        if condition['type'] == 'simple':
+            term = condition['term']
+            if condition.get('case_sensitive', False):
+                if term in message:
+                    start = 0
+                    while True:
+                        idx = message.find(term, start)
+                        if idx == -1:
+                            break
+                        matches.append((idx, idx + len(term)))
+                        start = idx + 1
+                    return (True, matches)
+            else:
+                message_lower = message.lower()
+                term_lower = term.lower()
+                if term_lower in message_lower:
+                    start = 0
+                    while True:
+                        idx = message_lower.find(term_lower, start)
+                        if idx == -1:
+                            break
+                        matches.append((idx, idx + len(term)))
+                        start = idx + 1
+                    return (True, matches)
+            return (False, [])
+        
+        if condition['type'] == 'regex':
+            try:
+                pattern = condition['pattern']
+                flags = condition.get('flags', 0)
+                regex = re.compile(pattern, flags)
+                for match in regex.finditer(message):
+                    matches.append((match.start(), match.end()))
+                return (len(matches) > 0, matches)
+            except re.error:
+                return (False, [])
+        
+        if condition['type'] == 'and':
+            all_matches = []
+            for cond in condition['conditions']:
+                matched, pos = self.match_log(message, cond)
+                if not matched:
+                    return (False, [])
+                all_matches.extend(pos)
+            return (True, all_matches)
+        
+        if condition['type'] == 'or':
+            any_matches = []
+            for cond in condition['conditions']:
+                matched, pos = self.match_log(message, cond)
+                if matched:
+                    any_matches.extend(pos)
+            return (len(any_matches) > 0, any_matches)
+        
+        if condition['type'] == 'not':
+            matched, _ = self.match_log(message, condition['condition'])
+            return (not matched, [])
+        
+        return (False, [])
+    
+    def filter_logs(self, logs: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+        """
+        过滤日志列表，返回匹配的日志，并添加匹配位置信息用于高亮
+        """
+        if not query or not query.strip():
+            return logs
+        
+        condition = self.parse_search_query(query)
+        if condition['type'] == 'none':
+            return logs
+        
+        filtered = []
+        for log in logs:
+            message = log.get('message', '')
+            matched, matches = self.match_log(message, condition)
+            if matched:
+                log_copy = log.copy()
+                if matches:
+                    log_copy['_matches'] = matches
+                filtered.append(log_copy)
+        
+        return filtered
+
+
+log_searcher = LogSearcher()
 
 
 class DockerService:
@@ -289,11 +481,7 @@ class DockerService:
                     continue
             
             if search:
-                search_lower = search.lower()
-                entries = [
-                    entry for entry in entries
-                    if search_lower in entry['message'].lower()
-                ]
+                entries = log_searcher.filter_logs(entries, search)
             
             return entries
         except Exception as e:
@@ -535,11 +723,7 @@ class DockerService:
         if before:
             filtered_logs = [log for log in filtered_logs if log['timestamp'] < before]
         if search:
-            search_lower = search.lower()
-            filtered_logs = [
-                log for log in filtered_logs
-                if search_lower in log['message'].lower()
-            ]
+            filtered_logs = log_searcher.filter_logs(filtered_logs, search)
         if tail:
             filtered_logs = filtered_logs[-tail:]
         if limit:
@@ -569,11 +753,7 @@ class DockerService:
         if until:
             all_logs = [log for log in all_logs if log['timestamp'] <= until]
         if search:
-            search_lower = search.lower()
-            all_logs = [
-                log for log in all_logs
-                if search_lower in log['message'].lower()
-            ]
+            all_logs = log_searcher.filter_logs(all_logs, search)
         
         all_logs.sort(key=lambda x: x['timestamp'])
         
