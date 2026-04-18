@@ -17,6 +17,9 @@
             <router-link to="/dashboard" class="btn btn-outline">
               Dashboard
             </router-link>
+            <router-link to="/multi-logs" class="btn btn-primary">
+              多容器日志聚合
+            </router-link>
             <button class="btn btn-outline" @click="fetchContainers">
               刷新
             </button>
