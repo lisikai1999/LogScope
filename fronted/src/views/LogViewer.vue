@@ -170,6 +170,9 @@
             </div>
           </div>
 
+          <!-- Statistics Panel -->
+          <LogStatsPanel :logs="logs" v-if="logs.length > 0" />
+
           <!-- Error Message with Retry -->
           <div v-if="error" class="error-message">
             <div class="error-content">
@@ -258,6 +261,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
+import LogStatsPanel from '../components/LogStatsPanel.vue'
 
 const route = useRoute()
 const containerId = ref(route.params.id)
