@@ -118,6 +118,56 @@
                 </div>
               </div>
             </div>
+            <div class="filter-row">
+              <div class="filter-group filter-group-full">
+                <div class="search-label-row">
+                  <label class="filter-label">搜索日志:</label>
+                  <button
+                    class="btn btn-sm btn-help"
+                    @click="showSearchHelp = !showSearchHelp"
+                    type="button"
+                  >
+                    {{ showSearchHelp ? '隐藏帮助' : '搜索语法帮助' }}
+                  </button>
+                </div>
+                <div class="search-help-panel" v-if="showSearchHelp">
+                  <div class="search-help-content">
+                    <h4>高级搜索语法</h4>
+                    <ul class="search-help-list">
+                      <li><strong>简单搜索:</strong> <code>error</code> - 搜索包含 "error" 的日志</li>
+                      <li><strong>正则表达式:</strong> <code>/error|warning/i</code> - 使用正则表达式搜索（i 表示不区分大小写）</li>
+                      <li><strong>AND 组合:</strong> <code>error AND warning</code> 或 <code>error && warning</code> - 同时包含两个关键词</li>
+                      <li><strong>OR 组合:</strong> <code>error OR warning</code> 或 <code>error || warning</code> - 包含任一关键词</li>
+                      <li><strong>排除搜索:</strong> <code>-error</code> 或 <code>NOT error</code> - 排除包含 "error" 的日志</li>
+                      <li><strong>组合示例:</strong> <code>(error OR warning) AND critical</code> - 包含 error 或 warning，且包含 critical</li>
+                    </ul>
+                  </div>
+                </div>
+                <div class="search-group">
+                  <input
+                    type="text"
+                    v-model="searchQuery"
+                    placeholder="输入关键词搜索... 支持正则、AND/OR 组合"
+                    class="filter-input search-input"
+                    @keyup.enter="fetchLogs"
+                  />
+                  <button
+                    class="btn btn-primary"
+                    @click="fetchLogs"
+                    :disabled="loading"
+                  >
+                    搜索
+                  </button>
+                  <button
+                    class="btn btn-outline"
+                    @click="clearSearch"
+                    v-if="searchQuery"
+                  >
+                    清除
+                  </button>
+                </div>
+              </div>
+            </div>
             <div class="filter-actions">
               <button
                 class="btn btn-primary"
@@ -139,8 +189,29 @@
               >
                 {{ autoRefresh ? '停止自动刷新' : '开启自动刷新 (1s)' }}
               </button>
+              <div class="export-group">
+                <label class="filter-label">导出格式:</label>
+                <select
+                  v-model="exportFormat"
+                  class="filter-input filter-input-select"
+                >
+                  <option value="json">JSON</option>
+                  <option value="txt">TXT</option>
+                  <option value="csv">CSV</option>
+                </select>
+                <button
+                  class="btn btn-primary"
+                  @click="exportLogs"
+                  :disabled="exporting"
+                >
+                  {{ exporting ? '导出中...' : '导出日志' }}
+                </button>
+              </div>
             </div>
           </div>
+
+          <!-- Statistics Panel -->
+          <LogStatsPanel :logs="logs" v-if="logs.length > 0" />
 
           <!-- Error Message with Retry -->
           <div v-if="error" class="error-message">
@@ -192,8 +263,7 @@
                 <div class="log-stream">
                   {{ log.stream.toUpperCase() }}
                 </div>
-                <div class="log-message">
-                  {{ log.message }}
+                <div class="log-message" v-html="highlightLogMessage(log)">
                 </div>
               </div>
               
@@ -230,6 +300,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
+import LogStatsPanel from '../components/LogStatsPanel.vue'
 
 const route = useRoute()
 const containerId = ref(route.params.id)
@@ -255,6 +326,10 @@ const tailCount = ref(null)
 const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
+const searchQuery = ref('')
+const exportFormat = ref('json')
+const exporting = ref(false)
+const showSearchHelp = ref(false)
 
 let currentNextToken = null
 let currentPrevToken = null
@@ -273,7 +348,7 @@ const filteredLogs = computed(() => {
 
 const fetchContainerInfo = async () => {
   try {
-    const response = await axios.get(`/api/containers/${containerId.value}`)
+    const response = await axios.get(`/api/containers/${containerId.value}/info`)
     if (response.data.success) {
       containerInfo.value = response.data.data
     }
@@ -300,6 +375,9 @@ const fetchLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
     
     const useLegacyTailMode = tailCount.value !== null
@@ -373,6 +451,9 @@ const fetchOlderLogs = async () => {
       if (sinceTime.value) {
         params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
       
       params.until = firstLogTimestamp
       params.tail = PAGE_SIZE
@@ -439,6 +520,9 @@ const fetchOlderLogs = async () => {
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
     }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
+    }
 
     console.log('Fetch older logs params:', params)
 
@@ -503,6 +587,9 @@ const fetchNewerLogs = async () => {
       if (untilTime.value) {
         params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
 
       const response = await axios.get(
         `/api/containers/${containerId.value}/logs`,
@@ -558,6 +645,9 @@ const fetchNewerLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
 
     console.log('Fetch newer logs params:', params)
@@ -763,7 +853,124 @@ const clearFilters = () => {
   tailCount.value = null
   filterStdout.value = true
   filterStderr.value = true
+  searchQuery.value = ''
   fetchLogs()
+}
+
+const clearSearch = () => {
+  searchQuery.value = ''
+  fetchLogs()
+}
+
+const highlightLogMessage = (log) => {
+  if (!log || !log.message) {
+    return ''
+  }
+  
+  const message = log.message
+  const matches = log._matches
+  
+  if (!matches || matches.length === 0) {
+    return escapeHtml(message)
+  }
+  
+  const sortedMatches = [...matches].sort((a, b) => a[0] - b[0])
+  
+  const mergedMatches = []
+  for (const match of sortedMatches) {
+    if (mergedMatches.length === 0) {
+      mergedMatches.push([...match])
+    } else {
+      const last = mergedMatches[mergedMatches.length - 1]
+      if (match[0] <= last[1]) {
+        last[1] = Math.max(last[1], match[1])
+      } else {
+        mergedMatches.push([...match])
+      }
+    }
+  }
+  
+  let result = ''
+  let lastIndex = 0
+  
+  for (const [start, end] of mergedMatches) {
+    if (start > lastIndex) {
+      result += escapeHtml(message.slice(lastIndex, start))
+    }
+    result += '<span class="search-highlight">' + escapeHtml(message.slice(start, end)) + '</span>'
+    lastIndex = end
+  }
+  
+  if (lastIndex < message.length) {
+    result += escapeHtml(message.slice(lastIndex))
+  }
+  
+  return result
+}
+
+const escapeHtml = (text) => {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
+const exportLogs = async () => {
+  try {
+    exporting.value = true
+    
+    const params = {
+      format: exportFormat.value
+    }
+    
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
+    if (untilTime.value) {
+      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
+    }
+    
+    console.log('Export logs params:', params)
+    
+    const queryString = new URLSearchParams(params).toString()
+    const url = `/api/containers/${containerId.value}/logs/export?${queryString}`
+    
+    const response = await fetch(url)
+    
+    if (!response.ok) {
+      throw new Error(`导出失败: ${response.status}`)
+    }
+    
+    const blob = await response.blob()
+    
+    const contentDisposition = response.headers.get('Content-Disposition')
+    let filename = `logs.${exportFormat.value}`
+    
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1]
+      }
+    }
+    
+    const downloadUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(downloadUrl)
+    
+    console.log(`Logs exported successfully as ${exportFormat.value}`)
+  } catch (err) {
+    console.error('Export logs error:', err)
+    alert(`导出日志失败: ${err.message}`)
+  } finally {
+    exporting.value = false
+  }
 }
 
 watch(autoRefresh, (newValue) => {
@@ -933,6 +1140,58 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+.search-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.btn-help {
+  background-color: transparent;
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-help:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.search-help-panel {
+  background-color: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.search-help-content h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.search-help-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: #78350f;
+}
+
+.search-help-list li {
+  margin-bottom: 0.25rem;
+}
+
+.search-help-list code {
+  background-color: #fde68a;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.75rem;
+}
+
 .filter-input {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border-color);
@@ -948,6 +1207,21 @@ onUnmounted(() => {
 
 .filter-input-number {
   min-width: 100px;
+}
+
+.filter-group-full {
+  width: 100%;
+}
+
+.search-group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 300px;
 }
 
 .quick-select {
@@ -975,6 +1249,26 @@ onUnmounted(() => {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.export-group {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.filter-input-select {
+  min-width: 100px;
+  background-color: var(--bg-primary);
+  cursor: pointer;
+}
+
+.filter-input-select:focus {
+  outline: none;
+  border-color: var(--primary-color);
 }
 
 .btn {
@@ -1166,6 +1460,14 @@ onUnmounted(() => {
 .log-message {
   flex: 1;
   word-break: break-word;
+}
+
+:deep(.search-highlight) {
+  background-color: #fbbf24;
+  color: #1e1e1e;
+  padding: 0 2px;
+  border-radius: 2px;
+  font-weight: bold;
 }
 
 .logs-footer {
