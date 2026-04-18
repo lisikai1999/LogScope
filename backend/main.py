@@ -96,7 +96,7 @@ async def root():
 async def list_containers(
     all_containers: bool = Query(False, description="是否显示所有容器（包括已停止的）"),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
-    page_size: int = Query(20, ge=1, le=100, description="每页数量，1-100"),
+    page_size: int = Query(20, ge=1, le=1000, description="每页数量，1-1000"),
     search: Optional[str] = Query(None, description="搜索关键词（容器名称、镜像、ID）")
 ):
     """获取容器列表（支持分页和搜索）"""
