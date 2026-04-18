@@ -118,6 +118,34 @@
                 </div>
               </div>
             </div>
+            <div class="filter-row">
+              <div class="filter-group filter-group-full">
+                <label class="filter-label">搜索日志:</label>
+                <div class="search-group">
+                  <input
+                    type="text"
+                    v-model="searchQuery"
+                    placeholder="输入关键词搜索日志内容..."
+                    class="filter-input search-input"
+                    @keyup.enter="fetchLogs"
+                  />
+                  <button
+                    class="btn btn-primary"
+                    @click="fetchLogs"
+                    :disabled="loading"
+                  >
+                    搜索
+                  </button>
+                  <button
+                    class="btn btn-outline"
+                    @click="clearSearch"
+                    v-if="searchQuery"
+                  >
+                    清除
+                  </button>
+                </div>
+              </div>
+            </div>
             <div class="filter-actions">
               <button
                 class="btn btn-primary"
@@ -139,8 +167,29 @@
               >
                 {{ autoRefresh ? '停止自动刷新' : '开启自动刷新 (1s)' }}
               </button>
+              <div class="export-group">
+                <label class="filter-label">导出格式:</label>
+                <select
+                  v-model="exportFormat"
+                  class="filter-input filter-input-select"
+                >
+                  <option value="json">JSON</option>
+                  <option value="txt">TXT</option>
+                  <option value="csv">CSV</option>
+                </select>
+                <button
+                  class="btn btn-primary"
+                  @click="exportLogs"
+                  :disabled="exporting"
+                >
+                  {{ exporting ? '导出中...' : '导出日志' }}
+                </button>
+              </div>
             </div>
           </div>
+
+          <!-- Statistics Panel -->
+          <LogStatsPanel :logs="logs" v-if="logs.length > 0" />
 
           <!-- Error Message with Retry -->
           <div v-if="error" class="error-message">
@@ -230,6 +279,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
+import LogStatsPanel from '../components/LogStatsPanel.vue'
 
 const route = useRoute()
 const containerId = ref(route.params.id)
@@ -255,6 +305,9 @@ const tailCount = ref(null)
 const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
+const searchQuery = ref('')
+const exportFormat = ref('json')
+const exporting = ref(false)
 
 let currentNextToken = null
 let currentPrevToken = null
@@ -273,7 +326,7 @@ const filteredLogs = computed(() => {
 
 const fetchContainerInfo = async () => {
   try {
-    const response = await axios.get(`/api/containers/${containerId.value}`)
+    const response = await axios.get(`/api/containers/${containerId.value}/info`)
     if (response.data.success) {
       containerInfo.value = response.data.data
     }
@@ -300,6 +353,9 @@ const fetchLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
     
     const useLegacyTailMode = tailCount.value !== null
@@ -373,6 +429,9 @@ const fetchOlderLogs = async () => {
       if (sinceTime.value) {
         params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
       
       params.until = firstLogTimestamp
       params.tail = PAGE_SIZE
@@ -439,6 +498,9 @@ const fetchOlderLogs = async () => {
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
     }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
+    }
 
     console.log('Fetch older logs params:', params)
 
@@ -503,6 +565,9 @@ const fetchNewerLogs = async () => {
       if (untilTime.value) {
         params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
 
       const response = await axios.get(
         `/api/containers/${containerId.value}/logs`,
@@ -558,6 +623,9 @@ const fetchNewerLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
 
     console.log('Fetch newer logs params:', params)
@@ -763,7 +831,72 @@ const clearFilters = () => {
   tailCount.value = null
   filterStdout.value = true
   filterStderr.value = true
+  searchQuery.value = ''
   fetchLogs()
+}
+
+const clearSearch = () => {
+  searchQuery.value = ''
+  fetchLogs()
+}
+
+const exportLogs = async () => {
+  try {
+    exporting.value = true
+    
+    const params = {
+      format: exportFormat.value
+    }
+    
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
+    if (untilTime.value) {
+      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
+    }
+    
+    console.log('Export logs params:', params)
+    
+    const queryString = new URLSearchParams(params).toString()
+    const url = `/api/containers/${containerId.value}/logs/export?${queryString}`
+    
+    const response = await fetch(url)
+    
+    if (!response.ok) {
+      throw new Error(`导出失败: ${response.status}`)
+    }
+    
+    const blob = await response.blob()
+    
+    const contentDisposition = response.headers.get('Content-Disposition')
+    let filename = `logs.${exportFormat.value}`
+    
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1]
+      }
+    }
+    
+    const downloadUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(downloadUrl)
+    
+    console.log(`Logs exported successfully as ${exportFormat.value}`)
+  } catch (err) {
+    console.error('Export logs error:', err)
+    alert(`导出日志失败: ${err.message}`)
+  } finally {
+    exporting.value = false
+  }
 }
 
 watch(autoRefresh, (newValue) => {
@@ -950,6 +1083,21 @@ onUnmounted(() => {
   min-width: 100px;
 }
 
+.filter-group-full {
+  width: 100%;
+}
+
+.search-group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 300px;
+}
+
 .quick-select {
   display: flex;
   gap: 0.5rem;
@@ -975,6 +1123,26 @@ onUnmounted(() => {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.export-group {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.filter-input-select {
+  min-width: 100px;
+  background-color: var(--bg-primary);
+  cursor: pointer;
+}
+
+.filter-input-select:focus {
+  outline: none;
+  border-color: var(--primary-color);
 }
 
 .btn {
