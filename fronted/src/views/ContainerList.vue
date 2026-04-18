@@ -10,12 +10,17 @@
             </svg>
             <div>
               <h1>Docker 日志查看器</h1>
-              <p>日志查看工具</p>
+              <p>容器管理</p>
             </div>
           </div>
-          <button class="btn btn-outline" @click="fetchContainers">
-            刷新
-          </button>
+          <div class="header-actions">
+            <router-link to="/dashboard" class="btn btn-outline">
+              Dashboard
+            </router-link>
+            <button class="btn btn-outline" @click="fetchContainers">
+              刷新
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -282,6 +287,12 @@ onMounted(() => {
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin: 0;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
 }
 
 .main-content {
