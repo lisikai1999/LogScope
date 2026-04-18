@@ -40,7 +40,9 @@
           
           <div class="stats-card">
             <h3>错误率趋势 (最近10个时间点)</h3>
-            <div class="chart-container" ref="trendChartRef"></div>
+            <div class="chart-container">
+              <canvas ref="trendChartRef"></canvas>
+            </div>
           </div>
           
           <div class="stats-card stats-card-full">
