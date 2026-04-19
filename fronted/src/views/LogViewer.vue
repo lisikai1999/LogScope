@@ -747,10 +747,23 @@ const connectWebSocket = () => {
     ws.close()
   }
   
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = window.location.host
+  const apiTarget = import.meta.env.VITE_API_TARGET || 'http://127.0.0.1:8000'
+  console.log('API 目标地址:', apiTarget)
   
-  let wsUrl = `${protocol}//${host}/api/containers/${containerId.value}/logs/stream`
+  let wsBaseUrl
+  if (apiTarget.startsWith('http://')) {
+    wsBaseUrl = 'ws://' + apiTarget.slice(7)
+  } else if (apiTarget.startsWith('https://')) {
+    wsBaseUrl = 'wss://' + apiTarget.slice(8)
+  } else {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    wsBaseUrl = `${protocol}//${host}`
+  }
+  
+  console.log('WebSocket 基础地址:', wsBaseUrl)
+  
+  let wsUrl = `${wsBaseUrl}/api/containers/${containerId.value}/logs/stream`
   
   const params = []
   
@@ -765,24 +778,31 @@ const connectWebSocket = () => {
     wsUrl += `?${params.join('&')}`
   }
   
-  console.log('连接 WebSocket:', wsUrl)
+  console.log('连接 WebSocket (直接连接后端):', wsUrl)
+  console.log('WebSocket 就绪状态:', ws ? ws.readyState : '未创建')
   
   ws = new WebSocket(wsUrl)
   
+  console.log('WebSocket 创建后状态:', ws.readyState)
+  console.log('WebSocket 常量: CONNECTING=' + WebSocket.CONNECTING + ', OPEN=' + WebSocket.OPEN + ', CLOSING=' + WebSocket.CLOSING + ', CLOSED=' + WebSocket.CLOSED)
+  
   ws.onopen = () => {
-    console.log('WebSocket 连接已建立')
+    console.log('WebSocket 连接已建立 (onopen)')
+    console.log('WebSocket 状态:', ws.readyState)
     wsConnected.value = true
     wsError.value = null
     reconnectAttempts.value = 0
   }
   
   ws.onmessage = (event) => {
+    console.log('WebSocket 收到消息:', event.data)
     try {
       const message = JSON.parse(event.data)
       
       if (message.type === 'connected') {
         console.log('WebSocket 连接成功:', message.message)
       } else if (message.type === 'log') {
+        console.log('WebSocket 收到日志:', message.data)
         handleWebSocketLog(message.data)
       } else if (message.type === 'error') {
         console.error('WebSocket 错误:', message.message)
@@ -796,13 +816,15 @@ const connectWebSocket = () => {
   }
   
   ws.onerror = (error) => {
-    console.error('WebSocket 错误:', error)
+    console.error('WebSocket 错误 (onerror):', error)
+    console.error('WebSocket 状态:', ws.readyState)
     wsError.value = 'WebSocket 连接错误'
     wsConnected.value = false
   }
   
   ws.onclose = (event) => {
-    console.log('WebSocket 连接已关闭:', event.code, event.reason)
+    console.log('WebSocket 连接已关闭 (onclose):', 'code=' + event.code + ', reason=' + event.reason + ', wasClean=' + event.wasClean)
+    console.log('WebSocket 状态:', ws.readyState)
     wsConnected.value = false
     
     if (autoRefresh.value && reconnectAttempts.value < MAX_RECONNECT_ATTEMPTS) {
