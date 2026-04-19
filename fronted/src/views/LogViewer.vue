@@ -747,23 +747,10 @@ const connectWebSocket = () => {
     ws.close()
   }
   
-  const apiTarget = import.meta.env.VITE_API_TARGET || 'http://127.0.0.1:8000'
-  console.log('API 目标地址:', apiTarget)
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = window.location.host
   
-  let wsBaseUrl
-  if (apiTarget.startsWith('http://')) {
-    wsBaseUrl = 'ws://' + apiTarget.slice(7)
-  } else if (apiTarget.startsWith('https://')) {
-    wsBaseUrl = 'wss://' + apiTarget.slice(8)
-  } else {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host
-    wsBaseUrl = `${protocol}//${host}`
-  }
-  
-  console.log('WebSocket 基础地址:', wsBaseUrl)
-  
-  let wsUrl = `${wsBaseUrl}/api/containers/${containerId.value}/logs/stream`
+  let wsUrl = `${protocol}//${host}/api/containers/${containerId.value}/logs/stream`
   
   const params = []
   
@@ -778,7 +765,7 @@ const connectWebSocket = () => {
     wsUrl += `?${params.join('&')}`
   }
   
-  console.log('连接 WebSocket (直接连接后端):', wsUrl)
+  console.log('连接 WebSocket (通过 Vite 代理):', wsUrl)
   console.log('WebSocket 就绪状态:', ws ? ws.readyState : '未创建')
   
   ws = new WebSocket(wsUrl)

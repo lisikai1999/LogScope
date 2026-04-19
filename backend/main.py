@@ -3,6 +3,7 @@ import csv
 import json
 import traceback
 import asyncio
+import time
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -434,14 +435,16 @@ async def websocket_log_stream(
     - 连接成功：{"type": "connected", "container_id": "..."}
     - 日志消息：{"type": "log", "data": {"timestamp": 123, "stream": "stdout", "message": "..."}}
     - 错误消息：{"type": "error", "message": "..."}
-    - 断开连接：{"type": "disconnected", "reason": "..."}
     """
+    app_logger.info(f"[WebSocket] 收到连接请求: container_id={container_id}, since={since}, tail={tail}")
+    
     await websocket.accept()
     
-    app_logger.info(f"WebSocket 连接已建立: container_id={container_id}, since={since}, tail={tail}")
+    app_logger.info(f"[WebSocket] 连接已接受: container_id={container_id}")
     
-    log_queue = asyncio.Queue()
+    log_queue = asyncio.Queue(maxsize=1000)
     stop_event = asyncio.Event()
+    log_reader_done = asyncio.Event()
     
     try:
         await websocket.send_json({
@@ -450,6 +453,8 @@ async def websocket_log_stream(
             "message": "连接成功，开始接收日志流"
         })
         
+        app_logger.info(f"[WebSocket] 已发送 connected 消息: container_id={container_id}")
+        
         log_stream = docker_service.get_container_logs_stream(
             container_id=container_id,
             since=since,
@@ -457,6 +462,7 @@ async def websocket_log_stream(
         )
         
         if log_stream is None:
+            app_logger.error(f"[WebSocket] Docker 服务不可用: container_id={container_id}")
             await websocket.send_json({
                 "type": "error",
                 "message": "Docker 服务不可用，无法获取日志流"
@@ -464,60 +470,65 @@ async def websocket_log_stream(
             await websocket.close(code=1011)
             return
         
-        loop = asyncio.get_event_loop()
+        app_logger.info(f"[WebSocket] 开始读取日志流: container_id={container_id}")
         
         def sync_log_reader():
             """同步日志读取函数，在线程池中运行"""
             try:
-                app_logger.info(f"开始读取日志流: container_id={container_id}")
+                app_logger.info(f"[WebSocket] 线程池: 开始读取日志流: container_id={container_id}")
                 for line in log_stream:
                     if stop_event.is_set():
-                        app_logger.info(f"停止读取日志流: container_id={container_id}")
+                        app_logger.info(f"[WebSocket] 线程池: 停止读取日志流 (stop_event 已设置): container_id={container_id}")
                         break
-                    if line:
-                        parsed_log = docker_service.parse_log_line(line)
-                        if parsed_log:
+                    
+                    if not line:
+                        continue
+                    
+                    parsed_log = docker_service.parse_log_line(line)
+                    if parsed_log:
+                        success = False
+                        while not stop_event.is_set() and not success:
                             try:
-                                loop.call_soon_threadsafe(log_queue.put_nowait, parsed_log)
-                            except Exception as e:
-                                app_logger.debug(f"无法放入队列: {e}")
+                                log_queue.put_nowait(parsed_log)
+                                success = True
+                            except asyncio.QueueFull:
+                                time.sleep(0.1)
+                
+                app_logger.info(f"[WebSocket] 线程池: 日志流读取完成: container_id={container_id}")
             except Exception as e:
-                app_logger.error(f"日志流读取错误: {e}")
+                app_logger.error(f"[WebSocket] 线程池: 日志流读取错误: {e}")
                 try:
-                    loop.call_soon_threadsafe(
-                        log_queue.put_nowait,
-                        {"_error": f"日志流读取错误: {str(e)}"}
-                    )
+                    log_queue.put_nowait({"_error": f"日志流读取错误: {str(e)}"})
                 except:
                     pass
+            finally:
+                log_reader_done.set()
         
-        executor = None
-        try:
-            import concurrent.futures
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            log_future = loop.run_in_executor(executor, sync_log_reader)
-        except Exception as e:
-            app_logger.error(f"创建线程池失败: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": f"服务器错误: {str(e)}"
-            })
-            await websocket.close(code=1011)
-            return
+        import concurrent.futures
+        loop = asyncio.get_event_loop()
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        log_future = loop.run_in_executor(executor, sync_log_reader)
         
         async def send_logs():
             """从队列读取日志并通过 WebSocket 发送"""
+            app_logger.info(f"[WebSocket] send_logs 任务启动: container_id={container_id}")
             while not stop_event.is_set():
                 try:
-                    log_entry = await asyncio.wait_for(log_queue.get(), timeout=0.5)
+                    if log_queue.empty() and log_reader_done.is_set():
+                        app_logger.info(f"[WebSocket] 队列为空且日志读取完成，退出 send_logs: container_id={container_id}")
+                        break
+                    
+                    log_entry = await asyncio.wait_for(log_queue.get(), timeout=0.1)
                     
                     if isinstance(log_entry, dict) and "_error" in log_entry:
+                        app_logger.error(f"[WebSocket] 收到错误消息: {log_entry['_error']}")
                         await websocket.send_json({
                             "type": "error",
                             "message": log_entry["_error"]
                         })
                         continue
                     
+                    app_logger.debug(f"[WebSocket] 发送日志: timestamp={log_entry.get('timestamp')}")
                     await websocket.send_json({
                         "type": "log",
                         "data": log_entry
@@ -525,44 +536,49 @@ async def websocket_log_stream(
                 except asyncio.TimeoutError:
                     continue
                 except Exception as e:
-                    app_logger.error(f"发送日志错误: {e}")
+                    app_logger.error(f"[WebSocket] 发送日志错误: {e}")
+                    stop_event.set()
                     break
+            
+            app_logger.info(f"[WebSocket] send_logs 任务结束: container_id={container_id}")
         
-        send_task = loop.create_task(send_logs())
-        
-        try:
-            while True:
+        async def read_client_messages():
+            """读取客户端发送的消息"""
+            app_logger.info(f"[WebSocket] read_client_messages 任务启动: container_id={container_id}")
+            while not stop_event.is_set():
                 try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
                     try:
                         message = json.loads(data)
                         if message.get("type") == "ping":
+                            app_logger.debug(f"[WebSocket] 收到 ping，发送 pong: container_id={container_id}")
                             await websocket.send_json({"type": "pong"})
                     except json.JSONDecodeError:
-                        app_logger.debug(f"收到无效的 JSON 消息: {data}")
+                        app_logger.debug(f"[WebSocket] 收到无效的 JSON 消息: {data}")
                 except asyncio.TimeoutError:
-                    if log_future.done():
-                        try:
-                            log_future.result()
-                        except Exception as e:
-                            app_logger.error(f"日志读取线程错误: {e}")
-                        break
                     continue
-        except WebSocketDisconnect:
-            app_logger.info(f"WebSocket 连接断开: container_id={container_id}")
-        finally:
-            stop_event.set()
-            send_task.cancel()
-            try:
-                await send_task
-            except asyncio.CancelledError:
-                pass
+                except WebSocketDisconnect:
+                    app_logger.info(f"[WebSocket] 客户端断开连接: container_id={container_id}")
+                    stop_event.set()
+                    break
+                except Exception as e:
+                    app_logger.error(f"[WebSocket] 读取客户端消息错误: {e}")
+                    stop_event.set()
+                    break
             
-            if executor:
-                executor.shutdown(wait=False)
-            
+            app_logger.info(f"[WebSocket] read_client_messages 任务结束: container_id={container_id}")
+        
+        send_task = asyncio.create_task(send_logs())
+        client_task = asyncio.create_task(read_client_messages())
+        
+        app_logger.info(f"[WebSocket] 所有任务已启动，等待完成: container_id={container_id}")
+        
+        await asyncio.gather(send_task, client_task, return_exceptions=True)
+        
+        app_logger.info(f"[WebSocket] 所有任务已完成: container_id={container_id}")
+        
     except ContainerNotFoundError as e:
-        app_logger.error(f"容器不存在: {container_id}")
+        app_logger.error(f"[WebSocket] 容器不存在: {container_id}")
         try:
             await websocket.send_json({
                 "type": "error",
@@ -572,8 +588,8 @@ async def websocket_log_stream(
             pass
         await websocket.close(code=1008)
     except Exception as e:
-        app_logger.error(f"WebSocket 错误: {e}")
-        app_logger.error(f"Stack trace:\n{traceback.format_exc()}")
+        app_logger.error(f"[WebSocket] 错误: {e}")
+        app_logger.error(f"[WebSocket] Stack trace:\n{traceback.format_exc()}")
         try:
             await websocket.send_json({
                 "type": "error",
@@ -583,7 +599,7 @@ async def websocket_log_stream(
             pass
         await websocket.close(code=1011)
     
-    app_logger.info(f"WebSocket 连接已关闭: container_id={container_id}")
+    app_logger.info(f"[WebSocket] 连接已关闭: container_id={container_id}")
 
 
 if __name__ == "__main__":
