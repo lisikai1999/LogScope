@@ -747,10 +747,37 @@ const connectWebSocket = () => {
     ws.close()
   }
   
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = window.location.host
+  const wsTarget = import.meta.env.VITE_WS_TARGET
+  const apiTarget = import.meta.env.VITE_API_TARGET || 'http://127.0.0.1:8000'
   
-  let wsUrl = `${protocol}//${host}/api/containers/${containerId.value}/logs/stream`
+  console.log('环境变量:')
+  console.log('  VITE_WS_TARGET:', wsTarget)
+  console.log('  VITE_API_TARGET:', apiTarget)
+  
+  let wsBaseUrl
+  
+  if (wsTarget) {
+    wsBaseUrl = wsTarget
+    console.log('使用 VITE_WS_TARGET 直接连接后端:', wsBaseUrl)
+  } else if (apiTarget) {
+    if (apiTarget.startsWith('http://')) {
+      wsBaseUrl = 'ws://' + apiTarget.slice(7)
+    } else if (apiTarget.startsWith('https://')) {
+      wsBaseUrl = 'wss://' + apiTarget.slice(8)
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const host = window.location.host
+      wsBaseUrl = `${protocol}//${host}`
+    }
+    console.log('使用 VITE_API_TARGET 转换为 WebSocket:', wsBaseUrl)
+  } else {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    wsBaseUrl = `${protocol}//${host}`
+    console.log('使用相对路径通过 Vite 代理:', wsBaseUrl)
+  }
+  
+  let wsUrl = `${wsBaseUrl}/api/containers/${containerId.value}/logs/stream`
   
   const params = []
   
@@ -765,7 +792,7 @@ const connectWebSocket = () => {
     wsUrl += `?${params.join('&')}`
   }
   
-  console.log('连接 WebSocket (通过 Vite 代理):', wsUrl)
+  console.log('最终 WebSocket 连接地址:', wsUrl)
   console.log('WebSocket 就绪状态:', ws ? ws.readyState : '未创建')
   
   ws = new WebSocket(wsUrl)
