@@ -440,6 +440,9 @@ async def websocket_log_stream(
     
     app_logger.info(f"WebSocket 连接已建立: container_id={container_id}, since={since}, tail={tail}")
     
+    log_queue = asyncio.Queue()
+    stop_event = asyncio.Event()
+    
     try:
         await websocket.send_json({
             "type": "connected",
@@ -463,27 +466,69 @@ async def websocket_log_stream(
         
         loop = asyncio.get_event_loop()
         
-        async def read_logs():
+        def sync_log_reader():
+            """同步日志读取函数，在线程池中运行"""
             try:
+                app_logger.info(f"开始读取日志流: container_id={container_id}")
                 for line in log_stream:
+                    if stop_event.is_set():
+                        app_logger.info(f"停止读取日志流: container_id={container_id}")
+                        break
                     if line:
                         parsed_log = docker_service.parse_log_line(line)
                         if parsed_log:
-                            await websocket.send_json({
-                                "type": "log",
-                                "data": parsed_log
-                            })
+                            try:
+                                loop.call_soon_threadsafe(log_queue.put_nowait, parsed_log)
+                            except Exception as e:
+                                app_logger.debug(f"无法放入队列: {e}")
             except Exception as e:
                 app_logger.error(f"日志流读取错误: {e}")
                 try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": f"日志流读取错误: {str(e)}"
-                    })
+                    loop.call_soon_threadsafe(
+                        log_queue.put_nowait,
+                        {"_error": f"日志流读取错误: {str(e)}"}
+                    )
                 except:
                     pass
         
-        log_task = loop.create_task(read_logs())
+        executor = None
+        try:
+            import concurrent.futures
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            log_future = loop.run_in_executor(executor, sync_log_reader)
+        except Exception as e:
+            app_logger.error(f"创建线程池失败: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"服务器错误: {str(e)}"
+            })
+            await websocket.close(code=1011)
+            return
+        
+        async def send_logs():
+            """从队列读取日志并通过 WebSocket 发送"""
+            while not stop_event.is_set():
+                try:
+                    log_entry = await asyncio.wait_for(log_queue.get(), timeout=0.5)
+                    
+                    if isinstance(log_entry, dict) and "_error" in log_entry:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": log_entry["_error"]
+                        })
+                        continue
+                    
+                    await websocket.send_json({
+                        "type": "log",
+                        "data": log_entry
+                    })
+                except asyncio.TimeoutError:
+                    continue
+                except Exception as e:
+                    app_logger.error(f"发送日志错误: {e}")
+                    break
+        
+        send_task = loop.create_task(send_logs())
         
         try:
             while True:
@@ -496,17 +541,25 @@ async def websocket_log_stream(
                     except json.JSONDecodeError:
                         app_logger.debug(f"收到无效的 JSON 消息: {data}")
                 except asyncio.TimeoutError:
-                    if log_task.done():
+                    if log_future.done():
+                        try:
+                            log_future.result()
+                        except Exception as e:
+                            app_logger.error(f"日志读取线程错误: {e}")
                         break
                     continue
         except WebSocketDisconnect:
             app_logger.info(f"WebSocket 连接断开: container_id={container_id}")
         finally:
-            log_task.cancel()
+            stop_event.set()
+            send_task.cancel()
             try:
-                await log_task
+                await send_task
             except asyncio.CancelledError:
                 pass
+            
+            if executor:
+                executor.shutdown(wait=False)
             
     except ContainerNotFoundError as e:
         app_logger.error(f"容器不存在: {container_id}")
