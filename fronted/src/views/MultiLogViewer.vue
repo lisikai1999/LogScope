@@ -7,7 +7,7 @@
           <router-link to="/" class="back-link">
             ← 返回容器列表
           </router-link>
-          <h1>容器日志</h1>
+          <h1>多容器日志聚合</h1>
         </div>
       </div>
     </header>
@@ -16,30 +16,101 @@
     <main class="main-content">
       <div class="container">
         <div class="card">
-          <!-- Container Info -->
-          <div v-if="containerInfo" class="container-info">
-            <h2>{{ getContainerName(containerInfo.names) }}</h2>
-            <div class="info-items">
-              <span class="info-item">
-                <strong>镜像:</strong> {{ containerInfo.image }}
-              </span>
-              <span class="info-item">
-                <strong>ID:</strong> {{ containerId.slice(0, 12) }}
-              </span>
-              <span class="info-item">
-                <strong>状态:</strong>
-                <span
-                  class="badge"
-                  :class="containerInfo.state === 'running' ? 'badge-success' : 'badge-secondary'"
+          <!-- Container Selection Panel -->
+          <div class="container-selection">
+            <h3 class="section-title">选择容器</h3>
+            <div class="selection-controls">
+              <div class="search-box">
+                <input
+                  type="text"
+                  v-model="containerSearchQuery"
+                  placeholder="搜索容器..."
+                  class="input"
+                />
+              </div>
+              <div class="selection-buttons">
+                <button 
+                  class="btn btn-sm" 
+                  @click="toggleSelectAll"
+                  :disabled="loadingContainers"
                 >
-                  {{ containerInfo.status }}
+                  {{ allSelected ? '取消全选' : '全选' }}
+                </button>
+                <button 
+                  class="btn btn-sm" 
+                  @click="clearSelection"
+                  :disabled="loadingContainers"
+                >
+                  清除选择
+                </button>
+                <button 
+                  class="btn btn-sm" 
+                  @click="fetchContainers"
+                  :disabled="loadingContainers"
+                >
+                  {{ loadingContainers ? '加载中...' : '刷新' }}
+                </button>
+              </div>
+            </div>
+            
+            <!-- Loading State -->
+            <div v-if="loadingContainers" class="selection-loading">
+              加载容器列表...
+            </div>
+            
+            <!-- Container Grid -->
+            <div v-else class="container-grid">
+              <div
+                v-for="container in filteredContainers"
+                :key="container.id"
+                class="container-card"
+                :class="{ 
+                  'selected': selectedContainers.includes(container.id),
+                  'container-card-running': container.state === 'running'
+                }"
+                @click="toggleContainer(container)"
+              >
+                <div class="container-status-indicator">
+                  <span 
+                    class="status-dot"
+                    :class="getStatusClass(container.state)"
+                  ></span>
+                </div>
+                <div class="container-info-select">
+                  <div class="container-name">{{ getContainerName(container.names) }}</div>
+                  <div class="container-meta">
+                    <span class="container-id">{{ container.id.slice(0, 12) }}</span>
+                    <span class="container-image">{{ container.image }}</span>
+                  </div>
+                </div>
+                <div class="container-color" v-if="selectedContainers.includes(container.id)">
+                  <span 
+                    class="color-badge"
+                    :style="{ backgroundColor: getContainerColor(container.id) }"
+                  ></span>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Selection Summary -->
+            <div class="selection-summary" v-if="selectedContainers.length > 0">
+              <span>已选择 <strong>{{ selectedContainers.length }}</strong> 个容器</span>
+              <div class="selected-containers-preview">
+                <span 
+                  v-for="id in selectedContainers" 
+                  :key="id"
+                  class="container-tag"
+                  :style="{ backgroundColor: getContainerColor(id) }"
+                >
+                  {{ getSelectedContainerName(id) }}
+                  <span class="tag-close" @click.stop="removeContainer(id)">×</span>
                 </span>
-              </span>
+              </div>
             </div>
           </div>
 
           <!-- Filters -->
-          <div class="filters-section">
+          <div class="filters-section" v-if="selectedContainers.length > 0">
             <div class="filter-row">
               <div class="filter-group">
                 <label class="filter-label">开始时间:</label>
@@ -149,12 +220,12 @@
                     v-model="searchQuery"
                     placeholder="输入关键词搜索... 支持正则、AND/OR 组合"
                     class="filter-input search-input"
-                    @keyup.enter="fetchLogs"
+                    @keyup.enter="fetchAllLogs"
                   />
                   <button
                     class="btn btn-primary"
-                    @click="fetchLogs"
-                    :disabled="loading"
+                    @click="fetchAllLogs"
+                    :disabled="loading || selectedContainers.length === 0"
                   >
                     搜索
                   </button>
@@ -171,8 +242,8 @@
             <div class="filter-actions">
               <button
                 class="btn btn-primary"
-                @click="fetchLogs"
-                :disabled="loading"
+                @click="fetchAllLogs"
+                :disabled="loading || selectedContainers.length === 0"
               >
                 {{ loading ? '加载中...' : '查询日志' }}
               </button>
@@ -187,7 +258,7 @@
                 @click="autoRefresh = !autoRefresh"
                 :class="{ active: autoRefresh }"
               >
-                {{ autoRefresh ? (wsConnected ? '实时日志流已连接' : '连接中...') : '开启实时日志流' }}
+                {{ autoRefresh ? '停止自动刷新' : '开启自动刷新 (5s)' }}
               </button>
               <div class="export-group">
                 <label class="filter-label">导出格式:</label>
@@ -202,7 +273,7 @@
                 <button
                   class="btn btn-primary"
                   @click="exportLogs"
-                  :disabled="exporting"
+                  :disabled="exporting || mergedLogs.length === 0"
                 >
                   {{ exporting ? '导出中...' : '导出日志' }}
                 </button>
@@ -210,8 +281,36 @@
             </div>
           </div>
 
+          <!-- Empty Selection State -->
+          <div v-else-if="!loadingContainers && selectedContainers.length === 0" class="empty-selection">
+            <div class="empty-icon">📦</div>
+            <h3>请选择要查看的容器</h3>
+            <p>从上方容器列表中选择一个或多个容器，即可在统一视图中查看聚合日志</p>
+            <div class="selection-tips">
+              <div class="tip-item">
+                <span class="tip-icon">💡</span>
+                <span>点击容器卡片即可选中/取消选中</span>
+              </div>
+              <div class="tip-item">
+                <span class="tip-icon">🎨</span>
+                <span>每个选中的容器会分配唯一颜色，便于区分日志来源</span>
+              </div>
+              <div class="tip-item">
+                <span class="tip-icon">⏱️</span>
+                <span>日志将按时间顺序混合展示，方便追踪跨服务调用链</span>
+              </div>
+            </div>
+          </div>
+
           <!-- Statistics Panel -->
-          <LogStatsPanel :logs="logs" v-if="logs.length > 0" />
+          <MultiLogStatsPanel 
+            :logs="mergedLogs" 
+            :containers="containers"
+            :selectedContainers="selectedContainers"
+            :getContainerColor="getContainerColor"
+            :getContainerName="getContainerNameFromId"
+            v-if="selectedContainers.length > 0 && mergedLogs.length > 0" 
+          />
 
           <!-- Error Message with Retry -->
           <div v-if="error" class="error-message">
@@ -225,11 +324,12 @@
 
           <!-- Logs Display -->
           <div 
+            v-if="selectedContainers.length > 0"
             class="logs-container" 
             ref="logsContainerRef"
           >
             <!-- Initial Loading State -->
-            <div v-if="loading && logs.length === 0" class="loading">
+            <div v-if="loading && mergedLogs.length === 0" class="loading">
               <div v-for="i in 10" :key="i" class="skeleton"></div>
             </div>
             
@@ -240,23 +340,18 @@
             
             <!-- Logs List -->
             <div v-else class="logs-list">
-              <!-- Load Older Trigger (at top) -->
-              <div ref="loadOlderTrigger" class="load-trigger">
-                <div v-if="loadingOlder" class="loading-more">
-                  <div class="loading-spinner"></div>
-                  <span>加载更早的日志...</span>
-                </div>
-                <div v-else-if="!hasOlder && logs.length > 0" class="no-more-logs">
-                  已加载全部历史日志
-                </div>
-              </div>
-              
               <div
                 v-for="(log, index) in filteredLogs"
-                :key="`${log.timestamp}-${index}`"
+                :key="`${log.containerId}-${log.timestamp}-${index}`"
                 class="log-entry"
                 :class="`log-${log.stream}`"
               >
+                <div 
+                  class="log-container-badge"
+                  :style="{ backgroundColor: getContainerColor(log.containerId) }"
+                >
+                  {{ getContainerShortName(log.containerId) }}
+                </div>
                 <div class="log-timestamp">
                   {{ formatLogTime(log.timestamp) }}
                 </div>
@@ -266,28 +361,14 @@
                 <div class="log-message" v-html="highlightLogMessage(log)">
                 </div>
               </div>
-              
-              <!-- Load Newer Trigger (at bottom) -->
-              <div ref="loadNewerTrigger" class="load-trigger">
-                <div v-if="loadingNewer" class="loading-more">
-                  <div class="loading-spinner"></div>
-                  <span>加载更新的日志...</span>
-                </div>
-              </div>
             </div>
           </div>
           
           <!-- Logs Footer -->
-          <div class="logs-footer">
-            <span>共 {{ filteredLogs.length }} 条日志</span>
-            <span v-if="hasNewer" class="has-more-indicator">
-              (向下滚动加载更新的日志)
-            </span>
-            <span v-else-if="hasOlder" class="has-more-indicator">
-              (向上滚动加载更早的日志)
-            </span>
-            <span v-else-if="autoRefresh" class="auto-refresh-indicator">
-              {{ wsConnected ? '(实时日志流已连接)' : '(连接中...)' }}
+          <div class="logs-footer" v-if="selectedContainers.length > 0">
+            <span>共 {{ filteredLogs.length }} 条日志 (来自 {{ selectedContainers.length }} 个容器)</span>
+            <span v-if="autoRefresh" class="auto-refresh-indicator">
+              (自动刷新中)
             </span>
           </div>
         </div>
@@ -298,31 +379,33 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
 import axios from 'axios'
-import LogStatsPanel from '../components/LogStatsPanel.vue'
+import MultiLogStatsPanel from '../components/MultiLogStatsPanel.vue'
 
-const route = useRoute()
-const containerId = ref(route.params.id)
+const containers = ref([])
+const loadingContainers = ref(true)
+const containerSearchQuery = ref('')
 
-const containerInfo = ref(null)
-const logs = ref([])
-const loading = ref(true)
-const loadingOlder = ref(false)
-const loadingNewer = ref(false)
+const selectedContainers = ref([])
+const containerColors = ref({})
+
+const logsByContainer = ref({})
+const loading = ref(false)
 const error = ref(null)
-const hasOlder = ref(true)
-const hasNewer = ref(false)
 const logsContainerRef = ref(null)
-const loadOlderTrigger = ref(null)
-const loadNewerTrigger = ref(null)
 
-const PAGE_SIZE = 1000
+const CONTAINER_COLORS = [
+  '#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6',
+  '#ec4899', '#06b6d4', '#84cc16', '#f97316', '#6366f1',
+  '#14b8a6', '#a855f7', '#eab308', '#22c55e', '#0ea5e9'
+]
+
+const PAGE_SIZE = 500
 const MAX_RETRY_COUNT = 3
 
 const sinceTime = ref('')
 const untilTime = ref('')
-const tailCount = ref(null)
+const tailCount = ref(100)
 const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
@@ -331,50 +414,146 @@ const exportFormat = ref('json')
 const exporting = ref(false)
 const showSearchHelp = ref(false)
 
-let currentNextToken = null
-let currentPrevToken = null
 let refreshInterval = null
-let olderObserver = null
-let newerObserver = null
 let retryCount = 0
 
-let ws = null
-const wsConnected = ref(false)
-const wsError = ref(null)
-const reconnectAttempts = ref(0)
-const MAX_RECONNECT_ATTEMPTS = 5
-const RECONNECT_DELAY = 2000
+const filteredContainers = computed(() => {
+  if (!containerSearchQuery.value) {
+    return containers.value
+  }
+  const query = containerSearchQuery.value.toLowerCase()
+  return containers.value.filter(c => {
+    const name = getContainerName(c.names)
+    return name.toLowerCase().includes(query) ||
+           c.image.toLowerCase().includes(query) ||
+           c.id.toLowerCase().includes(query)
+  })
+})
+
+const allSelected = computed(() => {
+  return filteredContainers.value.length > 0 && 
+         filteredContainers.value.every(c => selectedContainers.value.includes(c.id))
+})
+
+const mergedLogs = computed(() => {
+  const allLogs = []
+  for (const [containerId, logs] of Object.entries(logsByContainer.value)) {
+    allLogs.push(...logs.map(log => ({ ...log, containerId })))
+  }
+  return allLogs.sort((a, b) => a.timestamp - b.timestamp)
+})
 
 const filteredLogs = computed(() => {
-  return logs.value.filter(log => {
+  return mergedLogs.value.filter(log => {
     if (log.stream === 'stdout' && !filterStdout.value) return false
     if (log.stream === 'stderr' && !filterStderr.value) return false
     return true
   })
 })
 
-const fetchContainerInfo = async () => {
-  try {
-    const response = await axios.get(`/api/containers/${containerId.value}/info`)
-    if (response.data.success) {
-      containerInfo.value = response.data.data
-    }
-  } catch (err) {
-    console.error('Error fetching container info:', err)
+const getContainerColor = (containerId) => {
+  if (!containerColors.value[containerId]) {
+    const index = selectedContainers.value.indexOf(containerId)
+    containerColors.value[containerId] = CONTAINER_COLORS[index % CONTAINER_COLORS.length]
+  }
+  return containerColors.value[containerId]
+}
+
+const getContainerName = (names) => {
+  if (!names || names.length === 0) return 'N/A'
+  return names[0].replace(/^\//, '')
+}
+
+const getContainerNameFromId = (containerId) => {
+  const container = containers.value.find(c => c.id === containerId)
+  if (container) {
+    return getContainerName(container.names)
+  }
+  return containerId.slice(0, 12)
+}
+
+const getContainerShortName = (containerId) => {
+  const name = getContainerNameFromId(containerId)
+  if (name.length > 8) {
+    return name.slice(0, 6) + '..'
+  }
+  return name
+}
+
+const getSelectedContainerName = (containerId) => {
+  return getContainerNameFromId(containerId)
+}
+
+const getStatusClass = (state) => {
+  const classes = {
+    running: 'status-running',
+    exited: 'status-stopped',
+    paused: 'status-paused'
+  }
+  return classes[state] || 'status-unknown'
+}
+
+const toggleContainer = (container) => {
+  const index = selectedContainers.value.indexOf(container.id)
+  if (index > -1) {
+    removeContainer(container.id)
+  } else {
+    addContainer(container.id)
   }
 }
 
-const fetchLogs = async () => {
-  try {
-    loading.value = true
-    logs.value = []
-    currentNextToken = null
-    currentPrevToken = null
-    error.value = null
-    hasOlder.value = true
-    hasNewer.value = false
-    retryCount = 0
+const addContainer = (containerId) => {
+  if (!selectedContainers.value.includes(containerId)) {
+    selectedContainers.value.push(containerId)
+  }
+}
 
+const removeContainer = (containerId) => {
+  const index = selectedContainers.value.indexOf(containerId)
+  if (index > -1) {
+    selectedContainers.value.splice(index, 1)
+    delete logsByContainer.value[containerId]
+    delete containerColors.value[containerId]
+  }
+}
+
+const toggleSelectAll = () => {
+  if (allSelected.value) {
+    clearSelection()
+  } else {
+    filteredContainers.value.forEach(c => {
+      if (!selectedContainers.value.includes(c.id)) {
+        selectedContainers.value.push(c.id)
+      }
+    })
+  }
+}
+
+const clearSelection = () => {
+  selectedContainers.value = []
+  logsByContainer.value = {}
+  containerColors.value = {}
+}
+
+const fetchContainers = async () => {
+  try {
+    loadingContainers.value = true
+    const response = await axios.get('/api/containers', {
+      params: { all_containers: true, page_size: 1000 }
+    })
+    
+    if (response.data.success) {
+      containers.value = response.data.data
+    }
+  } catch (err) {
+    console.error('Error fetching containers:', err)
+  } finally {
+    loadingContainers.value = false
+  }
+}
+
+const fetchLogsForContainer = async (containerId) => {
+  try {
     const params = {}
 
     if (sinceTime.value) {
@@ -396,219 +575,66 @@ const fetchLogs = async () => {
       params.limit = PAGE_SIZE
     }
 
-    console.log('Fetch logs params:', params)
-
     const response = await axios.get(
-      `/api/containers/${containerId.value}/logs`,
+      `/api/containers/${containerId}/logs`,
       { params }
     )
 
     if (response.data.success) {
-      logs.value = response.data.data
-      
-      if (useLegacyTailMode) {
-        if (params.tail || params.limit) {
-          hasOlder.value = response.data.has_more !== false
-        } else {
-          hasOlder.value = false
-        }
-        hasNewer.value = false
-      } else {
-        currentNextToken = response.data.next_token || null
-        currentPrevToken = response.data.prev_token || null
-        hasNewer.value = response.data.has_more_forward === true
-        hasOlder.value = response.data.has_more_backward === true
-      }
-      
-      await nextTick()
-      if (useLegacyTailMode) {
-        scrollToBottom()
-      } else {
-        scrollToTop()
-      }
-      
-      retryCount = 0
-    } else {
-      error.value = response.data.error || '获取日志失败'
+      logsByContainer.value[containerId] = response.data.data
     }
   } catch (err) {
+    console.error(`Error fetching logs for container ${containerId}:`, err)
+  }
+}
+
+const fetchAllLogs = async () => {
+  if (selectedContainers.value.length === 0) {
+    return
+  }
+
+  try {
+    loading.value = true
+    error.value = null
+    retryCount = 0
+
+    const promises = selectedContainers.value.map(id => fetchLogsForContainer(id))
+    await Promise.all(promises)
+    
+    await nextTick()
+    scrollToBottom()
+    retryCount = 0
+  } catch (err) {
     error.value = err.message || '获取日志失败'
-    console.error('Fetch logs error:', err)
+    console.error('Fetch all logs error:', err)
   } finally {
     loading.value = false
   }
 }
 
-const fetchOlderLogs = async () => {
-  if (loadingOlder.value || !hasOlder.value) {
-    return
-  }
-
-  const useLegacyTailMode = tailCount.value !== null
+const fetchLogsAuto = async () => {
+  if (selectedContainers.value.length === 0) return
   
-  if (useLegacyTailMode) {
-    const firstLogTimestamp = logs.value.length > 0 ? logs.value[0].timestamp : 0
-    if (firstLogTimestamp === 0) return
-    
+  const promises = selectedContainers.value.map(async (containerId) => {
     try {
-      loadingOlder.value = true
-
-      const params = {}
+      const currentLogs = logsByContainer.value[containerId] || []
+      if (currentLogs.length === 0) return
       
-      if (sinceTime.value) {
-        params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
-      }
-      if (searchQuery.value) {
-        params.search = searchQuery.value
-      }
+      const lastLogTimestamp = currentLogs[currentLogs.length - 1].timestamp
       
-      params.until = firstLogTimestamp
-      params.tail = PAGE_SIZE
-
-      console.log('Fetch older logs (legacy) params:', params)
+      const params = { since: lastLogTimestamp }
 
       const response = await axios.get(
-        `/api/containers/${containerId.value}/logs`,
+        `/api/containers/${containerId}/logs`,
         { params }
       )
 
       if (response.data.success) {
-        const olderLogs = response.data.data
+        const newLogs = response.data.data
         
-        if (olderLogs.length > 0) {
-          const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
-          const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
-          
-          if (uniqueLogs.length > 0) {
-            const scrollTopBefore = logsContainerRef.value?.scrollTop || 0
-            const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
-            
-            logs.value = [...uniqueLogs, ...logs.value]
-            
-            await nextTick()
-            
-            if (logsContainerRef.value) {
-              const scrollHeightAfter = logsContainerRef.value.scrollHeight
-              const heightDiff = scrollHeightAfter - scrollHeightBefore
-              logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
-            }
-          }
-          
-          hasOlder.value = response.data.has_more !== false && uniqueLogs.length > 0
-        } else {
-          hasOlder.value = false
-        }
-      }
-    } catch (err) {
-      console.error('Error fetching older logs:', err)
-    } finally {
-      loadingOlder.value = false
-    }
-    return
-  }
-
-  if (!currentPrevToken) {
-    hasOlder.value = false
-    return
-  }
-
-  try {
-    loadingOlder.value = true
-
-    const params = {
-      next_token: currentPrevToken,
-      direction: 'backward',
-      limit: PAGE_SIZE
-    }
-    
-    if (sinceTime.value) {
-      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
-    }
-    if (untilTime.value) {
-      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
-    }
-    if (searchQuery.value) {
-      params.search = searchQuery.value
-    }
-
-    console.log('Fetch older logs params:', params)
-
-    const response = await axios.get(
-      `/api/containers/${containerId.value}/logs`,
-      { params }
-    )
-
-    if (response.data.success) {
-      const olderLogs = response.data.data
-      
-      currentPrevToken = response.data.prev_token || null
-      currentNextToken = response.data.next_token || null
-      hasOlder.value = response.data.has_more_backward === true
-      hasNewer.value = response.data.has_more_forward === true || hasNewer.value
-      
-      if (olderLogs.length > 0) {
-        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
-        const uniqueLogs = olderLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
-        
-        if (uniqueLogs.length > 0) {
-          const scrollTopBefore = logsContainerRef.value?.scrollTop || 0
-          const scrollHeightBefore = logsContainerRef.value?.scrollHeight || 0
-          
-          logs.value = [...uniqueLogs, ...logs.value]
-          
-          await nextTick()
-          
-          if (logsContainerRef.value) {
-            const scrollHeightAfter = logsContainerRef.value.scrollHeight
-            const heightDiff = scrollHeightAfter - scrollHeightBefore
-            logsContainerRef.value.scrollTop = scrollTopBefore + heightDiff
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Error fetching older logs:', err)
-  } finally {
-    loadingOlder.value = false
-  }
-}
-
-const fetchNewerLogs = async () => {
-  if (loadingNewer.value) {
-    return
-  }
-
-  const useLegacyTailMode = tailCount.value !== null
-  
-  if (useLegacyTailMode) {
-    const lastLogTimestamp = logs.value.length > 0 ? logs.value[logs.value.length - 1].timestamp : 0
-    if (lastLogTimestamp === 0) return
-    
-    try {
-      loadingNewer.value = true
-
-      const params = {
-        since: lastLogTimestamp
-      }
-
-      if (untilTime.value) {
-        params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
-      }
-      if (searchQuery.value) {
-        params.search = searchQuery.value
-      }
-
-      const response = await axios.get(
-        `/api/containers/${containerId.value}/logs`,
-        { params }
-      )
-
-      if (response.data.success) {
-        const newerLogs = response.data.data
-        
-        if (newerLogs.length > 0) {
-          const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
-          const uniqueLogs = newerLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
+        if (newLogs.length > 0) {
+          const existingIds = new Set(currentLogs.map(l => `${l.timestamp}-${l.message}`))
+          const uniqueLogs = newLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
           
           if (uniqueLogs.length > 0) {
             const container = logsContainerRef.value
@@ -616,7 +642,7 @@ const fetchNewerLogs = async () => {
               ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
               : false
             
-            logs.value = [...logs.value, ...uniqueLogs]
+            logsByContainer.value[containerId] = [...currentLogs, ...uniqueLogs]
             
             if (isAtBottom) {
               await nextTick()
@@ -626,307 +652,20 @@ const fetchNewerLogs = async () => {
         }
       }
     } catch (err) {
-      console.error('Error fetching newer logs:', err)
-    } finally {
-      loadingNewer.value = false
+      console.error(`Auto-refresh error for container ${containerId}:`, err)
     }
-    return
-  }
-
-  if (!currentNextToken) {
-    hasNewer.value = false
-    return
-  }
-
-  try {
-    loadingNewer.value = true
-
-    const params = {
-      next_token: currentNextToken,
-      direction: 'forward',
-      limit: PAGE_SIZE
-    }
-    
-    if (sinceTime.value) {
-      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
-    }
-    if (untilTime.value) {
-      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
-    }
-    if (searchQuery.value) {
-      params.search = searchQuery.value
-    }
-
-    console.log('Fetch newer logs params:', params)
-
-    const response = await axios.get(
-      `/api/containers/${containerId.value}/logs`,
-      { params }
-    )
-
-    if (response.data.success) {
-      const newerLogs = response.data.data
-      
-      currentNextToken = response.data.next_token || null
-      currentPrevToken = response.data.prev_token || null
-      hasNewer.value = response.data.has_more_forward === true
-      hasOlder.value = response.data.has_more_backward === true || hasOlder.value
-      
-      if (newerLogs.length > 0) {
-        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
-        const uniqueLogs = newerLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
-        
-        if (uniqueLogs.length > 0) {
-          const container = logsContainerRef.value
-          const isAtBottom = container 
-            ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
-            : false
-          
-          logs.value = [...logs.value, ...uniqueLogs]
-          
-          if (isAtBottom) {
-            await nextTick()
-            scrollToBottom()
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Error fetching newer logs:', err)
-  } finally {
-    loadingNewer.value = false
-  }
-}
-
-const fetchLogsAuto = async () => {
-  try {
-    if (logs.value.length === 0) return
-    
-    const lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
-    
-    const params = { since: lastLogTimestamp }
-
-    const response = await axios.get(
-      `/api/containers/${containerId.value}/logs`,
-      { params }
-    )
-
-    if (response.data.success) {
-      const newLogs = response.data.data
-      
-      if (logs.value.length > 0) {
-        const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
-        const uniqueLogs = newLogs.filter(l => !existingIds.has(`${l.timestamp}-${l.message}`))
-        if (uniqueLogs.length > 0) {
-          const container = logsContainerRef.value
-          const isAtBottom = container 
-            ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
-            : false
-          
-          logs.value.push(...uniqueLogs)
-          
-          if (isAtBottom) {
-            await nextTick()
-            scrollToBottom()
-          }
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Auto-refresh error:', err)
-  }
-}
-
-const connectWebSocket = () => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    console.log('WebSocket 已连接，无需重新连接')
-    return
-  }
+  })
   
-  if (ws) {
-    ws.close()
-  }
-  
-  const apiTarget = import.meta.env.VITE_API_TARGET || 'http://127.0.0.1:8000'
-  console.log('API 目标地址:', apiTarget)
-  
-  let wsBaseUrl
-  if (apiTarget.startsWith('http://')) {
-    wsBaseUrl = 'ws://' + apiTarget.slice(7)
-  } else if (apiTarget.startsWith('https://')) {
-    wsBaseUrl = 'wss://' + apiTarget.slice(8)
-  } else {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const host = window.location.host
-    wsBaseUrl = `${protocol}//${host}`
-  }
-  
-  console.log('WebSocket 基础地址:', wsBaseUrl)
-  
-  let wsUrl = `${wsBaseUrl}/api/containers/${containerId.value}/logs/stream`
-  
-  const params = []
-  
-  if (logs.value.length > 0) {
-    const lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
-    params.push(`since=${lastLogTimestamp}`)
-  } else if (tailCount.value !== null) {
-    params.push(`tail=${tailCount.value}`)
-  }
-  
-  if (params.length > 0) {
-    wsUrl += `?${params.join('&')}`
-  }
-  
-  console.log('连接 WebSocket (直接连接后端):', wsUrl)
-  console.log('WebSocket 就绪状态:', ws ? ws.readyState : '未创建')
-  
-  ws = new WebSocket(wsUrl)
-  
-  console.log('WebSocket 创建后状态:', ws.readyState)
-  console.log('WebSocket 常量: CONNECTING=' + WebSocket.CONNECTING + ', OPEN=' + WebSocket.OPEN + ', CLOSING=' + WebSocket.CLOSING + ', CLOSED=' + WebSocket.CLOSED)
-  
-  ws.onopen = () => {
-    console.log('WebSocket 连接已建立 (onopen)')
-    console.log('WebSocket 状态:', ws.readyState)
-    wsConnected.value = true
-    wsError.value = null
-    reconnectAttempts.value = 0
-  }
-  
-  ws.onmessage = (event) => {
-    console.log('WebSocket 收到消息:', event.data)
-    try {
-      const message = JSON.parse(event.data)
-      
-      if (message.type === 'connected') {
-        console.log('WebSocket 连接成功:', message.message)
-      } else if (message.type === 'log') {
-        console.log('WebSocket 收到日志:', message.data)
-        handleWebSocketLog(message.data)
-      } else if (message.type === 'error') {
-        console.error('WebSocket 错误:', message.message)
-        wsError.value = message.message
-      } else if (message.type === 'pong') {
-        console.log('收到 pong 响应')
-      }
-    } catch (err) {
-      console.error('解析 WebSocket 消息失败:', err)
-    }
-  }
-  
-  ws.onerror = (error) => {
-    console.error('WebSocket 错误 (onerror):', error)
-    console.error('WebSocket 状态:', ws.readyState)
-    wsError.value = 'WebSocket 连接错误'
-    wsConnected.value = false
-  }
-  
-  ws.onclose = (event) => {
-    console.log('WebSocket 连接已关闭 (onclose):', 'code=' + event.code + ', reason=' + event.reason + ', wasClean=' + event.wasClean)
-    console.log('WebSocket 状态:', ws.readyState)
-    wsConnected.value = false
-    
-    if (autoRefresh.value && reconnectAttempts.value < MAX_RECONNECT_ATTEMPTS) {
-      reconnectAttempts.value++
-      console.log(`尝试重新连接 (${reconnectAttempts.value}/${MAX_RECONNECT_ATTEMPTS})...`)
-      setTimeout(() => {
-        if (autoRefresh.value) {
-          connectWebSocket()
-        }
-      }, RECONNECT_DELAY)
-    }
-  }
-}
-
-const handleWebSocketLog = (logData) => {
-  if (!logData) return
-  
-  if (searchQuery.value) {
-    console.log('搜索模式下，WebSocket 日志暂时跳过（需要服务端支持搜索过滤）')
-    return
-  }
-  
-  const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
-  const logKey = `${logData.timestamp}-${logData.message}`
-  
-  if (!existingIds.has(logKey)) {
-    const container = logsContainerRef.value
-    const isAtBottom = container 
-      ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
-      : false
-    
-    logs.value.push(logData)
-    
-    if (isAtBottom) {
-      nextTick(() => {
-        scrollToBottom()
-      })
-    }
-  }
-}
-
-const disconnectWebSocket = () => {
-  if (ws) {
-    console.log('断开 WebSocket 连接')
-    ws.close()
-    ws = null
-  }
-  wsConnected.value = false
-  reconnectAttempts.value = 0
+  await Promise.all(promises)
 }
 
 const retryFetch = async () => {
   if (retryCount < MAX_RETRY_COUNT) {
     retryCount++
     error.value = null
-    await fetchLogs()
+    await fetchAllLogs()
   } else {
     error.value = `重试 ${MAX_RETRY_COUNT} 次后仍然失败，请稍后再试`
-  }
-}
-
-const setupObservers = () => {
-  if (!window.IntersectionObserver) {
-    return
-  }
-
-  if (olderObserver) {
-    olderObserver.disconnect()
-  }
-  
-  if (newerObserver) {
-    newerObserver.disconnect()
-  }
-
-  if (loadOlderTrigger.value) {
-    olderObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting && hasOlder.value && !loadingOlder.value) {
-          fetchOlderLogs()
-        }
-      })
-    }, {
-      root: logsContainerRef.value,
-      rootMargin: '100px',
-      threshold: 0.1
-    })
-    olderObserver.observe(loadOlderTrigger.value)
-  }
-
-  if (loadNewerTrigger.value) {
-    newerObserver = new IntersectionObserver((entries) => {
-      entries.forEach(entry => {
-        if (entry.isIntersecting && hasNewer.value && !loadingNewer.value && !autoRefresh.value) {
-          fetchNewerLogs()
-        }
-      })
-    }, {
-      root: logsContainerRef.value,
-      rootMargin: '100px',
-      threshold: 0.1
-    })
-    newerObserver.observe(loadNewerTrigger.value)
   }
 }
 
@@ -940,11 +679,6 @@ const scrollToTop = () => {
   if (logsContainerRef.value) {
     logsContainerRef.value.scrollTop = 0
   }
-}
-
-const getContainerName = (names) => {
-  if (!names || names.length === 0) return 'N/A'
-  return names[0].replace(/^\//, '')
 }
 
 const formatLogTime = (timestamp) => {
@@ -981,7 +715,7 @@ const setTimeRange = (range) => {
   }
 
   tailCount.value = null
-  fetchLogs()
+  fetchAllLogs()
 }
 
 const formatDateTimeLocal = (date) => {
@@ -996,16 +730,16 @@ const formatDateTimeLocal = (date) => {
 const clearFilters = () => {
   sinceTime.value = ''
   untilTime.value = ''
-  tailCount.value = null
+  tailCount.value = 100
   filterStdout.value = true
   filterStderr.value = true
   searchQuery.value = ''
-  fetchLogs()
+  fetchAllLogs()
 }
 
 const clearSearch = () => {
   searchQuery.value = ''
-  fetchLogs()
+  fetchAllLogs()
 }
 
 const highlightLogMessage = (log) => {
@@ -1064,43 +798,51 @@ const exportLogs = async () => {
   try {
     exporting.value = true
     
-    const params = {
-      format: exportFormat.value
+    const dataToExport = mergedLogs.value.map(log => ({
+      containerId: log.containerId,
+      containerName: getContainerNameFromId(log.containerId),
+      timestamp: log.timestamp,
+      time: formatLogTime(log.timestamp),
+      stream: log.stream,
+      message: log.message
+    }))
+    
+    let content, filename, mimeType
+    
+    switch (exportFormat.value) {
+      case 'json':
+        content = JSON.stringify(dataToExport, null, 2)
+        filename = 'multi-container-logs.json'
+        mimeType = 'application/json'
+        break
+      case 'csv':
+        const headers = ['Container ID', 'Container Name', 'Time', 'Stream', 'Message']
+        const csvRows = [headers.join(',')]
+        dataToExport.forEach(log => {
+          csvRows.push([
+            `"${log.containerId}"`,
+            `"${log.containerName}"`,
+            `"${log.time}"`,
+            `"${log.stream}"`,
+            `"${log.message.replace(/"/g, '""')}"`
+          ].join(','))
+        })
+        content = csvRows.join('\n')
+        filename = 'multi-container-logs.csv'
+        mimeType = 'text/csv'
+        break
+      case 'txt':
+      default:
+        const txtLines = dataToExport.map(log => 
+          `[${log.time}] [${log.containerName}] [${log.stream.toUpperCase()}] ${log.message}`
+        )
+        content = txtLines.join('\n')
+        filename = 'multi-container-logs.txt'
+        mimeType = 'text/plain'
+        break
     }
     
-    if (sinceTime.value) {
-      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
-    }
-    if (untilTime.value) {
-      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
-    }
-    if (searchQuery.value) {
-      params.search = searchQuery.value
-    }
-    
-    console.log('Export logs params:', params)
-    
-    const queryString = new URLSearchParams(params).toString()
-    const url = `/api/containers/${containerId.value}/logs/export?${queryString}`
-    
-    const response = await fetch(url)
-    
-    if (!response.ok) {
-      throw new Error(`导出失败: ${response.status}`)
-    }
-    
-    const blob = await response.blob()
-    
-    const contentDisposition = response.headers.get('Content-Disposition')
-    let filename = `logs.${exportFormat.value}`
-    
-    if (contentDisposition) {
-      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
-      if (filenameMatch && filenameMatch[1]) {
-        filename = filenameMatch[1]
-      }
-    }
-    
+    const blob = new Blob([content], { type: mimeType })
     const downloadUrl = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = downloadUrl
@@ -1121,11 +863,10 @@ const exportLogs = async () => {
 
 watch(autoRefresh, (newValue) => {
   if (newValue) {
-    console.log('开启实时日志流（WebSocket）')
-    connectWebSocket()
+    refreshInterval = setInterval(() => {
+      fetchLogsAuto()
+    }, 5000)
   } else {
-    console.log('关闭实时日志流')
-    disconnectWebSocket()
     if (refreshInterval) {
       clearInterval(refreshInterval)
       refreshInterval = null
@@ -1133,28 +874,14 @@ watch(autoRefresh, (newValue) => {
   }
 })
 
-watch([logs, hasOlder, hasNewer], () => {
-  nextTick(() => {
-    setupObservers()
-  })
-}, { deep: true })
-
 onMounted(() => {
-  fetchContainerInfo()
-  fetchLogs()
+  fetchContainers()
 })
 
 onUnmounted(() => {
   if (refreshInterval) {
     clearInterval(refreshInterval)
   }
-  if (olderObserver) {
-    olderObserver.disconnect()
-  }
-  if (newerObserver) {
-    newerObserver.disconnect()
-  }
-  disconnectWebSocket()
 })
 </script>
 
@@ -1199,7 +926,7 @@ onUnmounted(() => {
 }
 
 .container {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 0 1rem;
 }
@@ -1211,52 +938,246 @@ onUnmounted(() => {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-.container-info {
+/* Container Selection Styles */
+.container-selection {
   margin-bottom: 1.5rem;
   padding-bottom: 1.5rem;
   border-bottom: 1px solid var(--border-color);
 }
 
-.container-info h2 {
-  font-size: 1.25rem;
+.section-title {
+  font-size: 1rem;
   font-weight: 600;
-  margin: 0 0 0.75rem 0;
+  margin: 0 0 1rem 0;
+  color: var(--text-primary);
 }
 
-.info-items {
+.selection-controls {
   display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
   flex-wrap: wrap;
-  gap: 1.5rem;
+  align-items: center;
+}
+
+.search-box {
+  flex: 1;
+  min-width: 250px;
+}
+
+.input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
   font-size: 0.875rem;
 }
 
-.info-item {
+.input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+.selection-buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.selection-loading {
+  text-align: center;
+  padding: 2rem;
   color: var(--text-secondary);
 }
 
-.info-item strong {
-  color: var(--text-primary);
-  margin-right: 0.25rem;
+.container-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 0.25rem;
 }
 
-.badge {
+.container-card {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 2px solid var(--border-color);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  background-color: var(--bg-secondary);
+}
+
+.container-card:hover {
+  border-color: var(--primary-color);
+  background-color: var(--bg-primary);
+}
+
+.container-card.selected {
+  border-color: var(--primary-color);
+  background-color: rgba(59, 130, 246, 0.05);
+}
+
+.container-card-running {
+  border-left-color: var(--success-color);
+  border-left-width: 3px;
+}
+
+.container-status-indicator {
+  display: flex;
+  align-items: center;
+}
+
+.status-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
   display: inline-block;
-  padding: 0.125rem 0.5rem;
+}
+
+.status-running {
+  background-color: var(--success-color);
+}
+
+.status-stopped {
+  background-color: var(--error-color);
+}
+
+.status-paused {
+  background-color: var(--warning-color);
+}
+
+.container-info-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.container-name {
+  font-weight: 500;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.container-meta {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+}
+
+.container-id {
+  font-family: 'Courier New', monospace;
+}
+
+.container-image {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.container-color {
+  display: flex;
+  align-items: center;
+}
+
+.color-badge {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  border: 2px solid white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.selection-summary {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--border-color);
+}
+
+.selection-summary span {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.selected-containers-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.container-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
   border-radius: 9999px;
   font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.badge-success {
-  background-color: var(--success-color);
   color: white;
+  cursor: pointer;
 }
 
-.badge-secondary {
-  background-color: var(--text-secondary);
-  color: white;
+.tag-close {
+  font-size: 1rem;
+  line-height: 1;
+  opacity: 0.7;
 }
 
+.tag-close:hover {
+  opacity: 1;
+}
+
+/* Empty Selection Styles */
+.empty-selection {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--text-secondary);
+}
+
+.empty-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.empty-selection h3 {
+  font-size: 1.25rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-primary);
+}
+
+.empty-selection p {
+  margin-bottom: 1.5rem;
+}
+
+.selection-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.tip-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  text-align: left;
+  padding: 0.75rem;
+  background-color: var(--bg-secondary);
+  border-radius: 0.5rem;
+}
+
+.tip-icon {
+  font-size: 1.25rem;
+}
+
+/* Filters Section */
 .filters-section {
   margin-bottom: 1.5rem;
   padding: 1rem;
@@ -1506,42 +1427,6 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
-.load-trigger {
-  min-height: 20px;
-}
-
-.loading-more {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  padding: 1rem;
-  color: #888;
-  font-size: 0.875rem;
-}
-
-.loading-spinner {
-  width: 16px;
-  height: 16px;
-  border: 2px solid #3d3d3d;
-  border-top-color: var(--primary-color);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.no-more-logs {
-  text-align: center;
-  padding: 0.75rem;
-  color: #666;
-  font-size: 0.75rem;
-}
-
 .loading {
   padding: 1rem;
 }
@@ -1572,10 +1457,11 @@ onUnmounted(() => {
 
 .log-entry {
   display: flex;
-  gap: 1rem;
+  gap: 0.75rem;
   padding: 0.5rem 1rem;
   border-bottom: 1px solid #2d2d2d;
   color: #d4d4d4;
+  align-items: flex-start;
 }
 
 .log-entry:last-child {
@@ -1586,15 +1472,29 @@ onUnmounted(() => {
   background-color: #2d2d2d;
 }
 
+.log-container-badge {
+  min-width: 80px;
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: white;
+  text-align: center;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .log-timestamp {
   color: #888;
   min-width: 180px;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .log-stream {
   min-width: 70px;
   font-weight: bold;
+  flex-shrink: 0;
 }
 
 .log-stdout .log-stream {
@@ -1654,5 +1554,23 @@ onUnmounted(() => {
 
 .logs-container::-webkit-scrollbar-thumb:hover {
   background: #666;
+}
+
+.container-grid::-webkit-scrollbar {
+  width: 6px;
+}
+
+.container-grid::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 3px;
+}
+
+.container-grid::-webkit-scrollbar-thumb {
+  background: var(--text-secondary);
+  border-radius: 3px;
+}
+
+.container-grid::-webkit-scrollbar-thumb:hover {
+  background: var(--text-primary);
 }
 </style>

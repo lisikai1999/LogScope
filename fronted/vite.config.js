@@ -12,7 +12,18 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': {
           target: apiTarget,
-          changeOrigin: true
+          changeOrigin: true,
+          ws: true,
+          configure: (proxy, options) => {
+            proxy.on('proxyReq', (proxyReq, req, res) => {
+              if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
+                console.log('WebSocket 代理请求:', req.url)
+              }
+            })
+            proxy.on('error', (err, req, res) => {
+              console.error('代理错误:', err)
+            })
+          }
         }
       }
     },
