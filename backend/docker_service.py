@@ -490,6 +490,92 @@ class DockerService:
                 raise
             raise LogFetchError(f"获取日志失败: {str(e)}")
     
+    def get_container_logs_stream(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        tail: Optional[int] = None
+    ):
+        """获取容器实时日志流（生成器模式）
+        
+        返回一个生成器，用于持续获取容器的实时日志
+        适用于 WebSocket 实时推送场景
+        """
+        if not self.docker_available:
+            app_logger.warning("Docker is not available, cannot stream logs")
+            return None
+        
+        try:
+            container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_container_logs_stream", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            options = {
+                'stdout': True,
+                'stderr': True,
+                'timestamps': True,
+                'stream': True,
+                'follow': True,
+            }
+            
+            if since:
+                options['since'] = since
+            
+            if tail is not None:
+                options['tail'] = tail
+            
+            return container.logs(**options)
+        except Exception as e:
+            log_service_error("get_container_logs_stream", e, container_id=container_id, since=since, tail=tail)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise LogFetchError(f"获取日志流失败: {str(e)}")
+    
+    def parse_log_line(self, line: bytes) -> Optional[Dict[str, Any]]:
+        """解析单条日志行
+        
+        将 Docker 日志流返回的原始字节解析为结构化日志对象
+        """
+        try:
+            line_str = line.decode('utf-8').strip()
+            if not line_str:
+                return None
+            
+            if len(line_str) <= 8:
+                return None
+            
+            header = line_str[:8]
+            stream_type = 'stderr' if ord(header[0]) == 1 else 'stdout'
+            
+            content = line_str[8:] if len(line_str) > 8 else line_str
+            content = content.lstrip()
+            
+            parts = content.split(' ', 1)
+            if len(parts) < 2:
+                return None
+            
+            timestamp_str = parts[0]
+            message = parts[1]
+            
+            try:
+                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
+            except:
+                app_logger.debug(f"时间戳解析异常: {timestamp_str}")
+                return None
+            
+            return {
+                'timestamp': int(timestamp),
+                'stream': stream_type,
+                'message': message
+            }
+        except Exception as e:
+            app_logger.debug(f"Error parsing log line: {e}")
+            return None
+    
     def get_container_logs_paginated(
         self,
         container_id: str,

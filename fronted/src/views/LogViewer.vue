@@ -187,7 +187,7 @@
                 @click="autoRefresh = !autoRefresh"
                 :class="{ active: autoRefresh }"
               >
-                {{ autoRefresh ? '停止自动刷新' : '开启自动刷新 (1s)' }}
+                {{ autoRefresh ? (wsConnected ? '实时日志流已连接' : '连接中...') : '开启实时日志流' }}
               </button>
               <div class="export-group">
                 <label class="filter-label">导出格式:</label>
@@ -287,7 +287,7 @@
               (向上滚动加载更早的日志)
             </span>
             <span v-else-if="autoRefresh" class="auto-refresh-indicator">
-              (自动刷新中)
+              {{ wsConnected ? '(实时日志流已连接)' : '(连接中...)' }}
             </span>
           </div>
         </div>
@@ -337,6 +337,13 @@ let refreshInterval = null
 let olderObserver = null
 let newerObserver = null
 let retryCount = 0
+
+let ws = null
+const wsConnected = ref(false)
+const wsError = ref(null)
+const reconnectAttempts = ref(0)
+const MAX_RECONNECT_ATTEMPTS = 5
+const RECONNECT_DELAY = 2000
 
 const filteredLogs = computed(() => {
   return logs.value.filter(log => {
@@ -730,6 +737,123 @@ const fetchLogsAuto = async () => {
   }
 }
 
+const connectWebSocket = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    console.log('WebSocket 已连接，无需重新连接')
+    return
+  }
+  
+  if (ws) {
+    ws.close()
+  }
+  
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = window.location.host
+  
+  let wsUrl = `${protocol}//${host}/api/containers/${containerId.value}/logs/stream`
+  
+  const params = []
+  
+  if (logs.value.length > 0) {
+    const lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
+    params.push(`since=${lastLogTimestamp}`)
+  } else if (tailCount.value !== null) {
+    params.push(`tail=${tailCount.value}`)
+  }
+  
+  if (params.length > 0) {
+    wsUrl += `?${params.join('&')}`
+  }
+  
+  console.log('连接 WebSocket:', wsUrl)
+  
+  ws = new WebSocket(wsUrl)
+  
+  ws.onopen = () => {
+    console.log('WebSocket 连接已建立')
+    wsConnected.value = true
+    wsError.value = null
+    reconnectAttempts.value = 0
+  }
+  
+  ws.onmessage = (event) => {
+    try {
+      const message = JSON.parse(event.data)
+      
+      if (message.type === 'connected') {
+        console.log('WebSocket 连接成功:', message.message)
+      } else if (message.type === 'log') {
+        handleWebSocketLog(message.data)
+      } else if (message.type === 'error') {
+        console.error('WebSocket 错误:', message.message)
+        wsError.value = message.message
+      } else if (message.type === 'pong') {
+        console.log('收到 pong 响应')
+      }
+    } catch (err) {
+      console.error('解析 WebSocket 消息失败:', err)
+    }
+  }
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket 错误:', error)
+    wsError.value = 'WebSocket 连接错误'
+    wsConnected.value = false
+  }
+  
+  ws.onclose = (event) => {
+    console.log('WebSocket 连接已关闭:', event.code, event.reason)
+    wsConnected.value = false
+    
+    if (autoRefresh.value && reconnectAttempts.value < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts.value++
+      console.log(`尝试重新连接 (${reconnectAttempts.value}/${MAX_RECONNECT_ATTEMPTS})...`)
+      setTimeout(() => {
+        if (autoRefresh.value) {
+          connectWebSocket()
+        }
+      }, RECONNECT_DELAY)
+    }
+  }
+}
+
+const handleWebSocketLog = (logData) => {
+  if (!logData) return
+  
+  if (searchQuery.value) {
+    console.log('搜索模式下，WebSocket 日志暂时跳过（需要服务端支持搜索过滤）')
+    return
+  }
+  
+  const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+  const logKey = `${logData.timestamp}-${logData.message}`
+  
+  if (!existingIds.has(logKey)) {
+    const container = logsContainerRef.value
+    const isAtBottom = container 
+      ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+      : false
+    
+    logs.value.push(logData)
+    
+    if (isAtBottom) {
+      nextTick(() => {
+        scrollToBottom()
+      })
+    }
+  }
+}
+
+const disconnectWebSocket = () => {
+  if (ws) {
+    console.log('断开 WebSocket 连接')
+    ws.close()
+    ws = null
+  }
+  wsConnected.value = false
+  reconnectAttempts.value = 0
+}
+
 const retryFetch = async () => {
   if (retryCount < MAX_RETRY_COUNT) {
     retryCount++
@@ -975,10 +1099,11 @@ const exportLogs = async () => {
 
 watch(autoRefresh, (newValue) => {
   if (newValue) {
-    refreshInterval = setInterval(() => {
-      fetchLogsAuto()
-    }, 1000)
+    console.log('开启实时日志流（WebSocket）')
+    connectWebSocket()
   } else {
+    console.log('关闭实时日志流')
+    disconnectWebSocket()
     if (refreshInterval) {
       clearInterval(refreshInterval)
       refreshInterval = null
@@ -1007,6 +1132,7 @@ onUnmounted(() => {
   if (newerObserver) {
     newerObserver.disconnect()
   }
+  disconnectWebSocket()
 })
 </script>
 

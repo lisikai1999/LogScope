@@ -2,8 +2,9 @@ import io
 import csv
 import json
 import traceback
+import asyncio
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Optional, List
@@ -405,14 +406,131 @@ async def export_container_logs(
         raise
     except Exception as e:
         log_error(
-            "export_container_logs", e,
-            container_id=container_id,
-            format=format,
-            since=since,
-            until=until,
-            search=search
-        )
+                "export_container_logs", e,
+                container_id=container_id,
+                format=format,
+                since=since,
+                until=until,
+                search=search
+            )
         raise
+
+
+@app.websocket("/api/containers/{container_id}/logs/stream")
+async def websocket_log_stream(
+    websocket: WebSocket,
+    container_id: str,
+    since: Optional[int] = None,
+    tail: Optional[int] = None
+):
+    """WebSocket 实时日志流端点
+    
+    支持参数：
+    - container_id: 容器 ID
+    - since: 从指定时间戳开始获取日志（Unix 时间戳，秒）
+    - tail: 获取最后 N 行历史日志
+    
+    消息格式：
+    - 连接成功：{"type": "connected", "container_id": "..."}
+    - 日志消息：{"type": "log", "data": {"timestamp": 123, "stream": "stdout", "message": "..."}}
+    - 错误消息：{"type": "error", "message": "..."}
+    - 断开连接：{"type": "disconnected", "reason": "..."}
+    """
+    await websocket.accept()
+    
+    app_logger.info(f"WebSocket 连接已建立: container_id={container_id}, since={since}, tail={tail}")
+    
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "container_id": container_id,
+            "message": "连接成功，开始接收日志流"
+        })
+        
+        log_stream = docker_service.get_container_logs_stream(
+            container_id=container_id,
+            since=since,
+            tail=tail
+        )
+        
+        if log_stream is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Docker 服务不可用，无法获取日志流"
+            })
+            await websocket.close(code=1011)
+            return
+        
+        loop = asyncio.get_event_loop()
+        
+        async def read_logs():
+            try:
+                for line in log_stream:
+                    if line:
+                        parsed_log = docker_service.parse_log_line(line)
+                        if parsed_log:
+                            await websocket.send_json({
+                                "type": "log",
+                                "data": parsed_log
+                            })
+            except Exception as e:
+                app_logger.error(f"日志流读取错误: {e}")
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"日志流读取错误: {str(e)}"
+                    })
+                except:
+                    pass
+        
+        log_task = loop.create_task(read_logs())
+        
+        try:
+            while True:
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                    try:
+                        message = json.loads(data)
+                        if message.get("type") == "ping":
+                            await websocket.send_json({"type": "pong"})
+                    except json.JSONDecodeError:
+                        app_logger.debug(f"收到无效的 JSON 消息: {data}")
+                except asyncio.TimeoutError:
+                    if log_task.done():
+                        break
+                    continue
+        except WebSocketDisconnect:
+            app_logger.info(f"WebSocket 连接断开: container_id={container_id}")
+        finally:
+            log_task.cancel()
+            try:
+                await log_task
+            except asyncio.CancelledError:
+                pass
+            
+    except ContainerNotFoundError as e:
+        app_logger.error(f"容器不存在: {container_id}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"容器不存在: {container_id}"
+            })
+        except:
+            pass
+        await websocket.close(code=1008)
+    except Exception as e:
+        app_logger.error(f"WebSocket 错误: {e}")
+        app_logger.error(f"Stack trace:\n{traceback.format_exc()}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"服务器错误: {str(e)}"
+            })
+        except:
+            pass
+        await websocket.close(code=1011)
+    
+    app_logger.info(f"WebSocket 连接已关闭: container_id={container_id}")
 
 
 if __name__ == "__main__":
