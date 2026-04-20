@@ -758,7 +758,12 @@ async def websocket_log_stream(
                         })
                         continue
                     
-                    alert_engine.process_log(log_entry, container_id, container_name)
+                    try:
+                        alert_engine.process_log(log_entry, container_id, container_name)
+                    except Exception as e:
+                        app_logger.error(f"[WebSocket] 处理告警规则时出错: {e}")
+                        import traceback
+                        app_logger.error(f"Stack trace:\n{traceback.format_exc()}")
                     
                     app_logger.debug(f"[WebSocket] 发送日志: timestamp={log_entry.get('timestamp')}")
                     await websocket.send_json({
