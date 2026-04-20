@@ -1,0 +1,37 @@
+{
+  "rules": [
+    {
+      "id": "7903c07a-73e4-4856-ab8b-bed8730fc3a8",
+      "name": "测试",
+      "description": "测试",
+      "container_id": "d02619e59ce6dc6a5da69f63b2750ff0886baf2da40566b70285f36b8464deee",
+      "container_name": "demo4",
+      "condition": {
+        "rule_type": "consecutive_error",
+        "level": "error",
+        "count": 3,
+        "time_window_seconds": 60,
+        "keyword": "",
+        "regex_pattern": "",
+        "case_sensitive": false
+      },
+      "notifications": [
+        {
+          "channel_type": "webhook",
+          "enabled": true,
+          "config": {
+            "url": "https://a.b.c",
+            "method": "POST",
+            "payload_type": "generic"
+          }
+        }
+      ],
+      "enabled": true,
+      "created_at": 1776653693.4520032,
+      "updated_at": 1776653706.7047985,
+      "last_triggered_at": null,
+      "cooldown_seconds": 300,
+      "mute_until": null
+    }
+  ]
+}

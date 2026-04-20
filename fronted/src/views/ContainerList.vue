@@ -14,6 +14,9 @@
             </div>
           </div>
           <div class="header-actions">
+            <router-link to="/alert-rules" class="btn btn-outline">
+              告警规则
+            </router-link>
             <router-link to="/dashboard" class="btn btn-outline">
               Dashboard
             </router-link>

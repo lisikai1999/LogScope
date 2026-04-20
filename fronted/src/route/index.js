@@ -3,6 +3,7 @@ import ContainerList from '../views/ContainerList.vue'
 import LogViewer from '../views/LogViewer.vue'
 import MultiLogViewer from '../views/MultiLogViewer.vue'
 import Dashboard from '../views/Dashboard.vue'
+import AlertRules from '../views/AlertRules.vue'
 
 const routes = [
   {
@@ -14,6 +15,11 @@ const routes = [
     path: '/dashboard',
     name: 'Dashboard',
     component: Dashboard
+  },
+  {
+    path: '/alert-rules',
+    name: 'AlertRules',
+    component: AlertRules
   },
   {
     path: '/containers/:id',
