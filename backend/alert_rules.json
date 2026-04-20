@@ -1,0 +1,37 @@
+{
+  "rules": [
+    {
+      "id": "7903c07a-73e4-4856-ab8b-bed8730fc3a8",
+      "name": "测试",
+      "description": "测试",
+      "container_id": "d02619e59ce6dc6a5da69f63b2750ff0886baf2da40566b70285f36b8464deee",
+      "container_name": "demo4",
+      "condition": {
+        "rule_type": "keyword_frequency",
+        "level": "error",
+        "count": 3,
+        "time_window_seconds": 60,
+        "keyword": "GET",
+        "regex_pattern": "",
+        "case_sensitive": false
+      },
+      "notifications": [
+        {
+          "channel_type": "webhook",
+          "enabled": true,
+          "config": {
+            "url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=7af6b072-3ce9-4e45-bd0e-8001a1217abb",
+            "method": "POST",
+            "payload_type": "wechat"
+          }
+        }
+      ],
+      "enabled": true,
+      "created_at": 1776653693.4520032,
+      "updated_at": 1776654143.8803725,
+      "last_triggered_at": null,
+      "cooldown_seconds": 300,
+      "mute_until": null
+    }
+  ]
+}
