@@ -759,17 +759,6 @@ const connectWebSocket = () => {
   if (wsTarget) {
     wsBaseUrl = wsTarget
     console.log('使用 VITE_WS_TARGET 直接连接后端:', wsBaseUrl)
-  } else if (apiTarget) {
-    if (apiTarget.startsWith('http://')) {
-      wsBaseUrl = 'ws://' + apiTarget.slice(7)
-    } else if (apiTarget.startsWith('https://')) {
-      wsBaseUrl = 'wss://' + apiTarget.slice(8)
-    } else {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const host = window.location.host
-      wsBaseUrl = `${protocol}//${host}`
-    }
-    console.log('使用 VITE_API_TARGET 转换为 WebSocket:', wsBaseUrl)
   } else {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
