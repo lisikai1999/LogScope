@@ -548,13 +548,10 @@ class DockerService:
             if len(line_str) <= 8:
                 return None
             
-            header = line_str[:8]
-            stream_type = 'stderr' if ord(header[0]) == 1 else 'stdout'
-            
-            content = line_str[8:] if len(line_str) > 8 else line_str
-            content = content.lstrip()
+            content = line_str[0:]
             
             parts = content.split(' ', 1)
+            
             if len(parts) < 2:
                 return None
             
@@ -566,6 +563,9 @@ class DockerService:
             except:
                 app_logger.debug(f"时间戳解析异常: {timestamp_str}")
                 return None
+            
+            header = line_str[:8]
+            stream_type = 'stderr' if ord(header[0]) == 1 else 'stdout'
             
             return {
                 'timestamp': int(timestamp),
