@@ -102,7 +102,7 @@
           </div>
 
           <!-- Container Table -->
-          <div v-else class="table-container">
+          <div class="table-container">
             <table class="table">
               <thead>
                 <tr>

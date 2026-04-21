@@ -5,7 +5,7 @@ import traceback
 import asyncio
 import time
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from typing import Optional, List, Dict, Any
@@ -280,7 +280,9 @@ async def delete_container(container_id: str, force: bool = Query(False, descrip
 
 
 @app.post("/api/containers/batch/start")
-async def start_containers_batch(container_ids: List[str]):
+async def start_containers_batch(
+    container_ids: List[str] = Body(..., description="容器 ID 列表")
+):
     """批量启动容器
 
     请求体示例：
@@ -302,7 +304,9 @@ async def start_containers_batch(container_ids: List[str]):
 
 
 @app.post("/api/containers/batch/stop")
-async def stop_containers_batch(container_ids: List[str]):
+async def stop_containers_batch(
+    container_ids: List[str] = Body(..., description="容器 ID 列表")
+):
     """批量停止容器
 
     请求体示例：
@@ -325,7 +329,7 @@ async def stop_containers_batch(container_ids: List[str]):
 
 @app.post("/api/containers/batch/delete")
 async def delete_containers_batch(
-    container_ids: List[str],
+    container_ids: List[str] = Body(..., description="容器 ID 列表"),
     force: bool = Query(False, description="是否强制删除运行中的容器")
 ):
     """批量删除容器
