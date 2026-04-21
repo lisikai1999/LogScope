@@ -118,6 +118,57 @@
                 </div>
               </div>
             </div>
+            <div class="filter-row">
+              <div class="filter-group filter-group-full">
+                <div class="search-label-row">
+                  <label class="filter-label">搜索日志:</label>
+                  <button
+                    class="btn btn-sm btn-help"
+                    @click="showSearchHelp = !showSearchHelp"
+                    type="button"
+                  >
+                    {{ showSearchHelp ? '隐藏帮助' : '搜索语法帮助' }}
+                  </button>
+                </div>
+                <div class="search-help-panel" v-if="showSearchHelp">
+                  <div class="search-help-content">
+                    <h4>高级搜索语法</h4>
+                    <ul class="search-help-list">
+                      <li><strong>简单搜索:</strong> <code>error</code> - 搜索包含 "error" 的日志</li>
+                      <li><strong>正则表达式:</strong> <code>/error|warning/i</code> - 使用正则表达式搜索（i 表示不区分大小写）</li>
+                      <li><strong>AND 组合:</strong> <code>error AND warning</code> 或 <code>error && warning</code> - 同时包含两个关键词</li>
+                      <li><strong>OR 组合:</strong> <code>error OR warning</code> 或 <code>error || warning</code> - 包含任一关键词</li>
+                      <li><strong>排除搜索:</strong> <code>-error</code> 或 <code>NOT error</code> - 排除包含 "error" 的日志</li>
+                      <li><strong>组合示例:</strong> <code>(error OR warning) AND critical</code> - 包含 error 或 warning，且包含 critical</li>
+                    </ul>
+                  </div>
+                </div>
+                <div class="search-group">
+                  <input
+                    ref="searchInputRef"
+                    type="text"
+                    v-model="searchQuery"
+                    placeholder="输入关键词搜索... 支持正则、AND/OR 组合"
+                    class="filter-input search-input"
+                    @keyup.enter="fetchLogs"
+                  />
+                  <button
+                    class="btn btn-primary"
+                    @click="fetchLogs"
+                    :disabled="loading"
+                  >
+                    搜索
+                  </button>
+                  <button
+                    class="btn btn-outline"
+                    @click="clearSearch"
+                    v-if="searchQuery"
+                  >
+                    清除
+                  </button>
+                </div>
+              </div>
+            </div>
             <div class="filter-actions">
               <button
                 class="btn btn-primary"
@@ -137,10 +188,31 @@
                 @click="autoRefresh = !autoRefresh"
                 :class="{ active: autoRefresh }"
               >
-                {{ autoRefresh ? '停止自动刷新' : '开启自动刷新 (1s)' }}
+                {{ autoRefresh ? (wsConnected ? '实时日志流已连接' : '连接中...') : '开启实时日志流' }}
               </button>
+              <div class="export-group">
+                <label class="filter-label">导出格式:</label>
+                <select
+                  v-model="exportFormat"
+                  class="filter-input filter-input-select"
+                >
+                  <option value="json">JSON</option>
+                  <option value="txt">TXT</option>
+                  <option value="csv">CSV</option>
+                </select>
+                <button
+                  class="btn btn-primary"
+                  @click="exportLogs"
+                  :disabled="exporting"
+                >
+                  {{ exporting ? '导出中...' : '导出日志' }}
+                </button>
+              </div>
             </div>
           </div>
+
+          <!-- Statistics Panel -->
+          <LogStatsPanel :logs="logs" v-if="logs.length > 0" />
 
           <!-- Error Message with Retry -->
           <div v-if="error" class="error-message">
@@ -192,8 +264,7 @@
                 <div class="log-stream">
                   {{ log.stream.toUpperCase() }}
                 </div>
-                <div class="log-message">
-                  {{ log.message }}
+                <div class="log-message" v-html="highlightLogMessage(log)">
                 </div>
               </div>
               
@@ -217,7 +288,7 @@
               (向上滚动加载更早的日志)
             </span>
             <span v-else-if="autoRefresh" class="auto-refresh-indicator">
-              (自动刷新中)
+              {{ wsConnected ? '(实时日志流已连接)' : '(连接中...)' }}
             </span>
           </div>
         </div>
@@ -230,8 +301,12 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
+import LogStatsPanel from '../components/LogStatsPanel.vue'
+import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
 
 const route = useRoute()
+const { register } = useKeyboardShortcuts('log-viewer')
+
 const containerId = ref(route.params.id)
 
 const containerInfo = ref(null)
@@ -245,6 +320,7 @@ const hasNewer = ref(false)
 const logsContainerRef = ref(null)
 const loadOlderTrigger = ref(null)
 const loadNewerTrigger = ref(null)
+const searchInputRef = ref(null)
 
 const PAGE_SIZE = 1000
 const MAX_RETRY_COUNT = 3
@@ -255,6 +331,10 @@ const tailCount = ref(null)
 const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
+const searchQuery = ref('')
+const exportFormat = ref('json')
+const exporting = ref(false)
+const showSearchHelp = ref(false)
 
 let currentNextToken = null
 let currentPrevToken = null
@@ -262,6 +342,13 @@ let refreshInterval = null
 let olderObserver = null
 let newerObserver = null
 let retryCount = 0
+
+let ws = null
+const wsConnected = ref(false)
+const wsError = ref(null)
+const reconnectAttempts = ref(0)
+const MAX_RECONNECT_ATTEMPTS = 5
+const RECONNECT_DELAY = 2000
 
 const filteredLogs = computed(() => {
   return logs.value.filter(log => {
@@ -273,7 +360,7 @@ const filteredLogs = computed(() => {
 
 const fetchContainerInfo = async () => {
   try {
-    const response = await axios.get(`/api/containers/${containerId.value}`)
+    const response = await axios.get(`/api/containers/${containerId.value}/info`)
     if (response.data.success) {
       containerInfo.value = response.data.data
     }
@@ -300,6 +387,9 @@ const fetchLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
     
     const useLegacyTailMode = tailCount.value !== null
@@ -373,6 +463,9 @@ const fetchOlderLogs = async () => {
       if (sinceTime.value) {
         params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
       
       params.until = firstLogTimestamp
       params.tail = PAGE_SIZE
@@ -439,6 +532,9 @@ const fetchOlderLogs = async () => {
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
     }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
+    }
 
     console.log('Fetch older logs params:', params)
 
@@ -503,6 +599,9 @@ const fetchNewerLogs = async () => {
       if (untilTime.value) {
         params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
       }
+      if (searchQuery.value) {
+        params.search = searchQuery.value
+      }
 
       const response = await axios.get(
         `/api/containers/${containerId.value}/logs`,
@@ -558,6 +657,9 @@ const fetchNewerLogs = async () => {
     }
     if (untilTime.value) {
       params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
     }
 
     console.log('Fetch newer logs params:', params)
@@ -638,6 +740,148 @@ const fetchLogsAuto = async () => {
   } catch (err) {
     console.error('Auto-refresh error:', err)
   }
+}
+
+const connectWebSocket = () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    console.log('WebSocket 已连接，无需重新连接')
+    return
+  }
+  
+  if (ws) {
+    ws.close()
+  }
+  
+  const wsTarget = import.meta.env.VITE_WS_TARGET
+  const apiTarget = import.meta.env.VITE_API_TARGET || 'http://127.0.0.1:8000'
+  
+  console.log('环境变量:')
+  console.log('  VITE_WS_TARGET:', wsTarget)
+  console.log('  VITE_API_TARGET:', apiTarget)
+  
+  let wsBaseUrl
+  
+  if (wsTarget) {
+    wsBaseUrl = wsTarget
+    console.log('使用 VITE_WS_TARGET 直接连接后端:', wsBaseUrl)
+  } else {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    wsBaseUrl = `${protocol}//${host}`
+    console.log('使用相对路径通过 Vite 代理:', wsBaseUrl)
+  }
+  
+  let wsUrl = `${wsBaseUrl}/api/containers/${containerId.value}/logs/stream`
+  
+  const params = []
+  
+  if (logs.value.length > 0) {
+    const lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
+    params.push(`since=${lastLogTimestamp}`)
+  } else if (tailCount.value !== null) {
+    params.push(`tail=${tailCount.value}`)
+  }
+  
+  if (params.length > 0) {
+    wsUrl += `?${params.join('&')}`
+  }
+  
+  console.log('最终 WebSocket 连接地址:', wsUrl)
+  console.log('WebSocket 就绪状态:', ws ? ws.readyState : '未创建')
+  
+  ws = new WebSocket(wsUrl)
+  
+  console.log('WebSocket 创建后状态:', ws.readyState)
+  console.log('WebSocket 常量: CONNECTING=' + WebSocket.CONNECTING + ', OPEN=' + WebSocket.OPEN + ', CLOSING=' + WebSocket.CLOSING + ', CLOSED=' + WebSocket.CLOSED)
+  
+  ws.onopen = () => {
+    console.log('WebSocket 连接已建立 (onopen)')
+    console.log('WebSocket 状态:', ws.readyState)
+    wsConnected.value = true
+    wsError.value = null
+    reconnectAttempts.value = 0
+  }
+  
+  ws.onmessage = (event) => {
+    console.log('WebSocket 收到消息:', event.data)
+    try {
+      const message = JSON.parse(event.data)
+      
+      if (message.type === 'connected') {
+        console.log('WebSocket 连接成功:', message.message)
+      } else if (message.type === 'log') {
+        console.log('WebSocket 收到日志:', message.data)
+        handleWebSocketLog(message.data)
+      } else if (message.type === 'error') {
+        console.error('WebSocket 错误:', message.message)
+        wsError.value = message.message
+      } else if (message.type === 'pong') {
+        console.log('收到 pong 响应')
+      }
+    } catch (err) {
+      console.error('解析 WebSocket 消息失败:', err)
+    }
+  }
+  
+  ws.onerror = (error) => {
+    console.error('WebSocket 错误 (onerror):', error)
+    console.error('WebSocket 状态:', ws.readyState)
+    wsError.value = 'WebSocket 连接错误'
+    wsConnected.value = false
+  }
+  
+  ws.onclose = (event) => {
+    console.log('WebSocket 连接已关闭 (onclose):', 'code=' + event.code + ', reason=' + event.reason + ', wasClean=' + event.wasClean)
+    console.log('WebSocket 状态:', ws.readyState)
+    wsConnected.value = false
+    
+    if (autoRefresh.value && reconnectAttempts.value < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempts.value++
+      console.log(`尝试重新连接 (${reconnectAttempts.value}/${MAX_RECONNECT_ATTEMPTS})...`)
+      setTimeout(() => {
+        if (autoRefresh.value) {
+          connectWebSocket()
+        }
+      }, RECONNECT_DELAY)
+    }
+  }
+}
+
+const handleWebSocketLog = (logData) => {
+  if (!logData) return
+  
+  if (searchQuery.value) {
+    console.log('搜索模式下，WebSocket 日志暂时跳过（需要服务端支持搜索过滤）')
+    return
+  }
+  
+  const existingIds = new Set(logs.value.map(l => `${l.timestamp}-${l.message}`))
+  const logKey = `${logData.timestamp}-${logData.message}`
+  
+  if (!existingIds.has(logKey)) {
+    const container = logsContainerRef.value
+    const isAtBottom = container 
+      ? container.scrollHeight - container.scrollTop <= container.clientHeight + 50
+      : false
+    
+    logs.value.push(logData)
+    
+    if (isAtBottom) {
+      nextTick(() => {
+        scrollToBottom()
+      })
+    }
+  }
+}
+
+const disconnectWebSocket = () => {
+  if (ws) {
+    console.log('断开 WebSocket 连接')
+    ws.close()
+    ws = null
+  }
+  wsConnected.value = false
+  reconnectAttempts.value = 0
 }
 
 const retryFetch = async () => {
@@ -763,15 +1007,133 @@ const clearFilters = () => {
   tailCount.value = null
   filterStdout.value = true
   filterStderr.value = true
+  searchQuery.value = ''
   fetchLogs()
+}
+
+const clearSearch = () => {
+  searchQuery.value = ''
+  fetchLogs()
+}
+
+const highlightLogMessage = (log) => {
+  if (!log || !log.message) {
+    return ''
+  }
+  
+  const message = log.message
+  const matches = log._matches
+  
+  if (!matches || matches.length === 0) {
+    return escapeHtml(message)
+  }
+  
+  const sortedMatches = [...matches].sort((a, b) => a[0] - b[0])
+  
+  const mergedMatches = []
+  for (const match of sortedMatches) {
+    if (mergedMatches.length === 0) {
+      mergedMatches.push([...match])
+    } else {
+      const last = mergedMatches[mergedMatches.length - 1]
+      if (match[0] <= last[1]) {
+        last[1] = Math.max(last[1], match[1])
+      } else {
+        mergedMatches.push([...match])
+      }
+    }
+  }
+  
+  let result = ''
+  let lastIndex = 0
+  
+  for (const [start, end] of mergedMatches) {
+    if (start > lastIndex) {
+      result += escapeHtml(message.slice(lastIndex, start))
+    }
+    result += '<span class="search-highlight">' + escapeHtml(message.slice(start, end)) + '</span>'
+    lastIndex = end
+  }
+  
+  if (lastIndex < message.length) {
+    result += escapeHtml(message.slice(lastIndex))
+  }
+  
+  return result
+}
+
+const escapeHtml = (text) => {
+  const div = document.createElement('div')
+  div.textContent = text
+  return div.innerHTML
+}
+
+const exportLogs = async () => {
+  try {
+    exporting.value = true
+    
+    const params = {
+      format: exportFormat.value
+    }
+    
+    if (sinceTime.value) {
+      params.since = Math.floor(new Date(sinceTime.value).getTime() / 1000)
+    }
+    if (untilTime.value) {
+      params.until = Math.floor(new Date(untilTime.value).getTime() / 1000)
+    }
+    if (searchQuery.value) {
+      params.search = searchQuery.value
+    }
+    
+    console.log('Export logs params:', params)
+    
+    const queryString = new URLSearchParams(params).toString()
+    const url = `/api/containers/${containerId.value}/logs/export?${queryString}`
+    
+    const response = await fetch(url)
+    
+    if (!response.ok) {
+      throw new Error(`导出失败: ${response.status}`)
+    }
+    
+    const blob = await response.blob()
+    
+    const contentDisposition = response.headers.get('Content-Disposition')
+    let filename = `logs.${exportFormat.value}`
+    
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1]
+      }
+    }
+    
+    const downloadUrl = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = downloadUrl
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    window.URL.revokeObjectURL(downloadUrl)
+    
+    console.log(`Logs exported successfully as ${exportFormat.value}`)
+  } catch (err) {
+    console.error('Export logs error:', err)
+    alert(`导出日志失败: ${err.message}`)
+  } finally {
+    exporting.value = false
+  }
 }
 
 watch(autoRefresh, (newValue) => {
   if (newValue) {
-    refreshInterval = setInterval(() => {
-      fetchLogsAuto()
-    }, 1000)
+    console.log('开启实时日志流（WebSocket）')
+    connectWebSocket()
   } else {
+    console.log('关闭实时日志流')
+    disconnectWebSocket()
     if (refreshInterval) {
       clearInterval(refreshInterval)
       refreshInterval = null
@@ -785,9 +1147,64 @@ watch([logs, hasOlder, hasNewer], () => {
   })
 }, { deep: true })
 
+const focusSearch = () => {
+  if (searchInputRef.value) {
+    searchInputRef.value.focus()
+    searchInputRef.value.select()
+  }
+}
+
+const toggleAutoRefreshShortcut = (event) => {
+  const activeElement = document.activeElement
+  const tagName = activeElement?.tagName?.toLowerCase()
+  if (['input', 'textarea', 'select'].includes(tagName)) {
+    return
+  }
+  
+  event.preventDefault()
+  autoRefresh.value = !autoRefresh.value
+}
+
+const setupShortcuts = () => {
+  register({
+    key: 'f',
+    ctrl: true,
+    description: '聚焦搜索框',
+    handler: focusSearch,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'e',
+    ctrl: true,
+    description: '导出日志',
+    handler: exportLogs,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: ' ',
+    description: '暂停/恢复自动刷新',
+    handler: toggleAutoRefreshShortcut,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'Escape',
+    description: '清除筛选',
+    handler: clearFilters,
+    allowInInput: true,
+    preventDefault: false
+  })
+}
+
 onMounted(() => {
   fetchContainerInfo()
   fetchLogs()
+  setupShortcuts()
 })
 
 onUnmounted(() => {
@@ -800,6 +1217,7 @@ onUnmounted(() => {
   if (newerObserver) {
     newerObserver.disconnect()
   }
+  disconnectWebSocket()
 })
 </script>
 
@@ -933,6 +1351,58 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+.search-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+}
+
+.btn-help {
+  background-color: transparent;
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+}
+
+.btn-help:hover {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.search-help-panel {
+  background-color: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 0.375rem;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.search-help-content h4 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #92400e;
+}
+
+.search-help-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: #78350f;
+}
+
+.search-help-list li {
+  margin-bottom: 0.25rem;
+}
+
+.search-help-list code {
+  background-color: #fde68a;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.75rem;
+}
+
 .filter-input {
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border-color);
@@ -948,6 +1418,21 @@ onUnmounted(() => {
 
 .filter-input-number {
   min-width: 100px;
+}
+
+.filter-group-full {
+  width: 100%;
+}
+
+.search-group {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 300px;
 }
 
 .quick-select {
@@ -975,6 +1460,26 @@ onUnmounted(() => {
   margin-top: 1rem;
   padding-top: 1rem;
   border-top: 1px solid var(--border-color);
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.export-group {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.filter-input-select {
+  min-width: 100px;
+  background-color: var(--bg-primary);
+  cursor: pointer;
+}
+
+.filter-input-select:focus {
+  outline: none;
+  border-color: var(--primary-color);
 }
 
 .btn {
@@ -1166,6 +1671,14 @@ onUnmounted(() => {
 .log-message {
   flex: 1;
   word-break: break-word;
+}
+
+:deep(.search-highlight) {
+  background-color: #fbbf24;
+  color: #1e1e1e;
+  padding: 0 2px;
+  border-radius: 2px;
+  font-weight: bold;
 }
 
 .logs-footer {
