@@ -145,6 +145,7 @@
                 </div>
                 <div class="search-group">
                   <input
+                    ref="searchInputRef"
                     type="text"
                     v-model="searchQuery"
                     placeholder="输入关键词搜索... 支持正则、AND/OR 组合"
@@ -301,8 +302,11 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
 import LogStatsPanel from '../components/LogStatsPanel.vue'
+import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
 
 const route = useRoute()
+const { register } = useKeyboardShortcuts('log-viewer')
+
 const containerId = ref(route.params.id)
 
 const containerInfo = ref(null)
@@ -316,6 +320,7 @@ const hasNewer = ref(false)
 const logsContainerRef = ref(null)
 const loadOlderTrigger = ref(null)
 const loadNewerTrigger = ref(null)
+const searchInputRef = ref(null)
 
 const PAGE_SIZE = 1000
 const MAX_RETRY_COUNT = 3
@@ -1142,9 +1147,64 @@ watch([logs, hasOlder, hasNewer], () => {
   })
 }, { deep: true })
 
+const focusSearch = () => {
+  if (searchInputRef.value) {
+    searchInputRef.value.focus()
+    searchInputRef.value.select()
+  }
+}
+
+const toggleAutoRefreshShortcut = (event) => {
+  const activeElement = document.activeElement
+  const tagName = activeElement?.tagName?.toLowerCase()
+  if (['input', 'textarea', 'select'].includes(tagName)) {
+    return
+  }
+  
+  event.preventDefault()
+  autoRefresh.value = !autoRefresh.value
+}
+
+const setupShortcuts = () => {
+  register({
+    key: 'f',
+    ctrl: true,
+    description: '聚焦搜索框',
+    handler: focusSearch,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'e',
+    ctrl: true,
+    description: '导出日志',
+    handler: exportLogs,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: ' ',
+    description: '暂停/恢复自动刷新',
+    handler: toggleAutoRefreshShortcut,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'Escape',
+    description: '清除筛选',
+    handler: clearFilters,
+    allowInInput: true,
+    preventDefault: false
+  })
+}
+
 onMounted(() => {
   fetchContainerInfo()
   fetchLogs()
+  setupShortcuts()
 })
 
 onUnmounted(() => {
