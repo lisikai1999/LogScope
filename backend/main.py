@@ -199,6 +199,79 @@ async def get_container_logs(
         raise
 
 
+@app.post("/api/containers/batch/start")
+async def start_containers_batch(
+    container_ids: List[str] = Body(..., description="容器 ID 列表")
+):
+    """批量启动容器
+
+    请求体示例：
+    ["container_id_1", "container_id_2", "container_id_3"]
+    """
+    try:
+        app_logger.debug(f"[Batch Start] 收到批量启动请求: {container_ids}")
+        result = docker_service.start_containers_batch(container_ids)
+        return {
+            "success": result['success'],
+            "data": result,
+            "message": f"批量启动完成：成功 {result['started_count']} 个，失败 {result['failed_count']} 个"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("start_containers_batch", e, container_ids=str(container_ids))
+        raise
+
+
+@app.post("/api/containers/batch/stop")
+async def stop_containers_batch(
+    container_ids: List[str] = Body(..., description="容器 ID 列表")
+):
+    """批量停止容器
+
+    请求体示例：
+    ["container_id_1", "container_id_2", "container_id_3"]
+    """
+    try:
+        app_logger.debug(f"[Batch Stop] 收到批量停止请求: {container_ids}")
+        result = docker_service.stop_containers_batch(container_ids)
+        return {
+            "success": result['success'],
+            "data": result,
+            "message": f"批量停止完成：成功 {result['stopped_count']} 个，失败 {result['failed_count']} 个"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("stop_containers_batch", e, container_ids=str(container_ids))
+        raise
+
+
+@app.post("/api/containers/batch/delete")
+async def delete_containers_batch(
+    container_ids: List[str] = Body(..., description="容器 ID 列表"),
+    force: bool = Query(False, description="是否强制删除运行中的容器")
+):
+    """批量删除容器
+
+    请求体示例：
+    ["container_id_1", "container_id_2", "container_id_3"]
+    """
+    try:
+        app_logger.debug(f"[Batch Delete] 收到批量删除请求: {container_ids}, force={force}")
+        result = docker_service.delete_containers_batch(container_ids, force=force)
+        return {
+            "success": result['success'],
+            "data": result,
+            "message": f"批量删除完成：成功 {result['deleted_count']} 个，失败 {result['failed_count']} 个"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("delete_containers_batch", e, container_ids=str(container_ids), force=force)
+        raise
+
+
 @app.get("/api/containers/{container_id}/info")
 async def get_container_info(container_id: str):
     """获取容器详情"""
@@ -276,79 +349,6 @@ async def delete_container(container_id: str, force: bool = Query(False, descrip
         raise
     except Exception as e:
         log_error("delete_container", e, container_id=container_id, force=force)
-        raise
-
-
-@app.post("/api/containers/batch/start")
-async def start_containers_batch(
-    container_ids: List[str] = Body(..., description="容器 ID 列表")
-):
-    """批量启动容器
-
-    请求体示例：
-    ["container_id_1", "container_id_2", "container_id_3"]
-    """
-    try:
-        app_logger.debug(f"[Batch Start] 收到批量启动请求: {container_ids}")
-        result = docker_service.start_containers_batch(container_ids)
-        return {
-            "success": result['success'],
-            "data": result,
-            "message": f"批量启动完成：成功 {result['started_count']} 个，失败 {result['failed_count']} 个"
-        }
-    except AppException:
-        raise
-    except Exception as e:
-        log_error("start_containers_batch", e, container_ids=str(container_ids))
-        raise
-
-
-@app.post("/api/containers/batch/stop")
-async def stop_containers_batch(
-    container_ids: List[str] = Body(..., description="容器 ID 列表")
-):
-    """批量停止容器
-
-    请求体示例：
-    ["container_id_1", "container_id_2", "container_id_3"]
-    """
-    try:
-        app_logger.debug(f"[Batch Stop] 收到批量停止请求: {container_ids}")
-        result = docker_service.stop_containers_batch(container_ids)
-        return {
-            "success": result['success'],
-            "data": result,
-            "message": f"批量停止完成：成功 {result['stopped_count']} 个，失败 {result['failed_count']} 个"
-        }
-    except AppException:
-        raise
-    except Exception as e:
-        log_error("stop_containers_batch", e, container_ids=str(container_ids))
-        raise
-
-
-@app.post("/api/containers/batch/delete")
-async def delete_containers_batch(
-    container_ids: List[str] = Body(..., description="容器 ID 列表"),
-    force: bool = Query(False, description="是否强制删除运行中的容器")
-):
-    """批量删除容器
-
-    请求体示例：
-    ["container_id_1", "container_id_2", "container_id_3"]
-    """
-    try:
-        app_logger.debug(f"[Batch Delete] 收到批量删除请求: {container_ids}, force={force}")
-        result = docker_service.delete_containers_batch(container_ids, force=force)
-        return {
-            "success": result['success'],
-            "data": result,
-            "message": f"批量删除完成：成功 {result['deleted_count']} 个，失败 {result['failed_count']} 个"
-        }
-    except AppException:
-        raise
-    except Exception as e:
-        log_error("delete_containers_batch", e, container_ids=str(container_ids), force=force)
         raise
 
 
