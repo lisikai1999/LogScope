@@ -265,7 +265,7 @@
               <div class="details-grid">
                 <div class="detail-item">
                   <span class="detail-label">容器 ID</span>
-                  <span class="detail-value font-mono">{{ containerDetails.id }}</span>
+                  <span class="detail-value font-mono">{{ containerDetails.id?.slice(0, 12) || 'N/A' }}</span>
                 </div>
                 <div class="detail-item">
                   <span class="detail-label">名称</span>
@@ -537,7 +537,7 @@
               <div class="details-grid">
                 <div class="detail-item">
                   <span class="detail-label">镜像 ID</span>
-                  <span class="detail-value font-mono">{{ imageLayersData.id }}</span>
+                  <span class="detail-value font-mono">{{ imageLayersData.id?.slice(7, 19) || imageLayersData.id?.slice(0, 12) || 'N/A' }}</span>
                 </div>
                 <div class="detail-item">
                   <span class="detail-label">标签</span>
