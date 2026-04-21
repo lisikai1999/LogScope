@@ -615,31 +615,196 @@ async def websocket_log_stream(
         
         app_logger.info(f"[WebSocket] 开始读取日志流: container_id={container_id}")
         
+        def is_valid_docker_header(data: bytes) -> bool:
+            """检查数据是否看起来像有效的 Docker 日志头部"""
+            if len(data) < 8:
+                return False
+            
+            # 检查流类型字节（应该是 0, 1, 或 2）
+            stream_type = data[0]
+            if stream_type not in (0, 1, 2):
+                return False
+            
+            # 检查第 2-4 字节是否都是 0
+            if data[1] != 0 or data[2] != 0 or data[3] != 0:
+                return False
+            
+            # 检查内容长度是否合理（不能太大，比如超过 1MB）
+            content_length = int.from_bytes(data[4:8], byteorder='big')
+            if content_length < 0 or content_length > 1024 * 1024:  # 1MB 限制
+                return False
+            
+            return True
+        
+        def parse_tty_log_line(line_str: str) -> Optional[Dict[str, Any]]:
+            """解析 TTY 模式下的日志行（纯文本格式）"""
+            try:
+                line_str = line_str.strip()
+                if not line_str:
+                    return None
+                
+                # TTY 模式下，日志格式为：时间戳 + 空格 + 消息
+                # 例如：2026-04-21T10:00:00.000000000Z This is a log message
+                parts = line_str.split(' ', 1)
+                
+                if len(parts) < 2:
+                    return None
+                
+                timestamp_str = parts[0]
+                message = parts[1]
+                
+                try:
+                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
+                except:
+                    return None
+                
+                return {
+                    'timestamp': int(timestamp),
+                    'stream': 'stdout',  # TTY 模式下无法区分 stdout/stderr，默认为 stdout
+                    'message': message
+                }
+            except:
+                return None
+        
         def sync_log_reader():
             """同步日志读取函数，在线程池中运行"""
             try:
                 app_logger.info(f"[WebSocket] 线程池: 开始读取日志流: container_id={container_id}")
-                for line in log_stream:
+                
+                buffer = bytearray()
+                entry_count = 0
+                byte_count = 0
+                mode_detected = False
+                is_tty_mode = False  # 默认假设非 TTY 模式
+                
+                for chunk in log_stream:
                     if stop_event.is_set():
                         app_logger.info(f"[WebSocket] 线程池: 停止读取日志流 (stop_event 已设置): container_id={container_id}")
                         break
                     
-                    if not line:
+                    if not chunk:
                         continue
                     
-                    parsed_log = docker_service.parse_log_line(line)
-                    if parsed_log:
-                        success = False
-                        while not stop_event.is_set() and not success:
-                            try:
-                                log_queue.put_nowait(parsed_log)
-                                success = True
-                            except asyncio.QueueFull:
-                                time.sleep(0.1)
+                    # 处理接收到的数据块（可能是单个字节或多个字节）
+                    if isinstance(chunk, bytes):
+                        buffer.extend(chunk)
+                        byte_count += len(chunk)
+                    elif isinstance(chunk, int):
+                        # 某些情况下可能返回单个整数（字节值）
+                        buffer.append(chunk)
+                        byte_count += 1
+                    
+                    # 检测日志流模式（TTY 或非 TTY）
+                    if not mode_detected and len(buffer) >= 8:
+                        if is_valid_docker_header(bytes(buffer[:8])):
+                            is_tty_mode = False
+                            app_logger.info(f"[WebSocket] 检测到非 TTY 模式（有 8 字节头部）")
+                        else:
+                            is_tty_mode = True
+                            app_logger.info(f"[WebSocket] 检测到 TTY 模式（纯文本格式，无 8 字节头部）")
+                        mode_detected = True
+                    
+                    # 根据模式解析日志
+                    if mode_detected:
+                        if not is_tty_mode:
+                            # 非 TTY 模式：使用 8 字节头部
+                            while len(buffer) >= 8:
+                                # 解析8字节头部
+                                stream_type_byte = buffer[0]
+                                content_length = int.from_bytes(buffer[4:8], byteorder='big')
+                                
+                                # 检查是否有足够的数据
+                                total_entry_length = 8 + content_length
+                                if len(buffer) < total_entry_length:
+                                    # 数据不足，等待更多数据
+                                    break
+                                
+                                # 提取完整的日志条目
+                                entry_bytes = bytes(buffer[:total_entry_length])
+                                
+                                # 从缓冲区中移除已处理的数据
+                                del buffer[:total_entry_length]
+                                
+                                entry_count += 1
+                                
+                                # 调试信息
+                                if entry_count <= 3:  # 只打印前3条的详细调试信息
+                                    app_logger.info(f"[WebSocket] 组装完整日志条目 #{entry_count}:")
+                                    app_logger.info(f"  总字节数: {total_entry_length}")
+                                    app_logger.info(f"  流类型字节: {stream_type_byte}")
+                                    app_logger.info(f"  内容长度: {content_length}")
+                                    app_logger.info(f"  原始数据前30字节 (hex): {entry_bytes[:30].hex()}")
+                                
+                                # 解析日志条目
+                                parsed_log = docker_service.parse_log_line(entry_bytes)
+                                
+                                if entry_count <= 3:
+                                    app_logger.info(f"  解析结果: {parsed_log}")
+                                
+                                if parsed_log:
+                                    success = False
+                                    while not stop_event.is_set() and not success:
+                                        try:
+                                            log_queue.put_nowait(parsed_log)
+                                            success = True
+                                        except asyncio.QueueFull:
+                                            time.sleep(0.1)
+                        else:
+                            # TTY 模式：按换行符分割纯文本
+                            # 查找换行符
+                            while True:
+                                newline_pos = -1
+                                # 查找 \n 或 \r\n
+                                for i in range(len(buffer)):
+                                    if buffer[i] == ord('\n'):
+                                        newline_pos = i
+                                        break
+                                
+                                if newline_pos == -1:
+                                    # 没有找到换行符，等待更多数据
+                                    break
+                                
+                                # 提取一行（包括换行符）
+                                line_bytes = bytes(buffer[:newline_pos + 1])
+                                del buffer[:newline_pos + 1]
+                                
+                                # 转换为字符串并解析
+                                try:
+                                    line_str = line_bytes.decode('utf-8').strip()
+                                except:
+                                    continue
+                                
+                                if not line_str:
+                                    continue
+                                
+                                entry_count += 1
+                                
+                                # 调试信息
+                                if entry_count <= 3:
+                                    app_logger.info(f"[WebSocket] TTY 模式日志行 #{entry_count}:")
+                                    app_logger.info(f"  原始行: {line_str[:100]}")
+                                
+                                # 解析日志行
+                                parsed_log = parse_tty_log_line(line_str)
+                                
+                                if entry_count <= 3:
+                                    app_logger.info(f"  解析结果: {parsed_log}")
+                                
+                                if parsed_log:
+                                    success = False
+                                    while not stop_event.is_set() and not success:
+                                        try:
+                                            log_queue.put_nowait(parsed_log)
+                                            success = True
+                                        except asyncio.QueueFull:
+                                            time.sleep(0.1)
                 
                 app_logger.info(f"[WebSocket] 线程池: 日志流读取完成: container_id={container_id}")
+                app_logger.info(f"[WebSocket] 统计: 接收字节数={byte_count}, 解析条目数={entry_count}, 缓冲区剩余字节={len(buffer)}, 模式={'TTY' if is_tty_mode else '非 TTY'}")
+                
             except Exception as e:
                 app_logger.error(f"[WebSocket] 线程池: 日志流读取错误: {e}")
+                app_logger.error(f"[WebSocket] 线程池: 错误堆栈:\n{traceback.format_exc()}")
                 try:
                     log_queue.put_nowait({"_error": f"日志流读取错误: {str(e)}"})
                 except:

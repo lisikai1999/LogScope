@@ -545,49 +545,85 @@ class DockerService:
         - 第5-8字节：日志内容长度（大端序）
         """
         try:
-            if len(line) < 8:
+            app_logger.info(f"[parse_log_line] 开始解析: 输入类型={type(line)}, 长度={len(line) if isinstance(line, (bytes, str)) else 'N/A'}")
+            
+            if not isinstance(line, bytes):
+                app_logger.warning(f"[parse_log_line] 输入不是 bytes 类型: {type(line)}")
                 return None
             
+            if len(line) < 8:
+                app_logger.warning(f"[parse_log_line] 数据长度不足8字节: {len(line)}")
+                return None
+            
+            app_logger.info(f"[parse_log_line] 原始数据 (hex): {line.hex()}")
+            app_logger.info(f"[parse_log_line] 原始数据 (raw): {line}")
+            
             stream_type_byte = line[0]
+            app_logger.info(f"[parse_log_line] 流类型字节: {stream_type_byte} (0x{stream_type_byte:02x})")
+            
             if stream_type_byte == 1:
                 stream_type = 'stdout'
             elif stream_type_byte == 2:
                 stream_type = 'stderr'
             else:
                 stream_type = 'stdout'
+                app_logger.warning(f"[parse_log_line] 未知流类型字节: {stream_type_byte}，默认为 stdout")
             
             content_length = int.from_bytes(line[4:8], byteorder='big')
+            app_logger.info(f"[parse_log_line] 内容长度字段: {content_length} (hex: {line[4:8].hex()})")
+            app_logger.info(f"[parse_log_line] 实际数据总长度: {len(line)}")
+            app_logger.info(f"[parse_log_line] 预期内容开始位置: 8, 预期内容结束位置: {8 + content_length}")
             
             if len(line) < 8 + content_length:
+                app_logger.warning(f"[parse_log_line] 数据长度不足预期: 实际={len(line)}, 预期={8 + content_length}")
                 content = line[8:]
             else:
                 content = line[8:8+content_length]
             
-            line_str = content.decode('utf-8').strip()
+            app_logger.info(f"[parse_log_line] 提取的内容 (长度={len(content)}): {content}")
+            
+            try:
+                line_str = content.decode('utf-8').strip()
+                app_logger.info(f"[parse_log_line] 解码后的字符串: {line_str}")
+            except UnicodeDecodeError as e:
+                app_logger.error(f"[parse_log_line] UTF-8 解码失败: {e}")
+                # 尝试使用 latin-1 解码
+                line_str = content.decode('latin-1').strip()
+                app_logger.info(f"[parse_log_line] 使用 latin-1 解码后的字符串: {line_str}")
+            
             if not line_str:
+                app_logger.warning(f"[parse_log_line] 解码后的字符串为空")
                 return None
             
             parts = line_str.split(' ', 1)
             
             if len(parts) < 2:
+                app_logger.warning(f"[parse_log_line] 字符串格式不正确，缺少空格分隔: {line_str}")
                 return None
             
             timestamp_str = parts[0]
             message = parts[1]
             
+            app_logger.info(f"[parse_log_line] 时间戳字符串: {timestamp_str}")
+            app_logger.info(f"[parse_log_line] 消息内容: {message}")
+            
             try:
                 timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
-            except:
-                app_logger.debug(f"时间戳解析异常: {timestamp_str}")
+                app_logger.info(f"[parse_log_line] 解析后的时间戳: {timestamp}")
+            except Exception as e:
+                app_logger.error(f"[parse_log_line] 时间戳解析异常: {timestamp_str}, 错误: {e}")
                 return None
             
-            return {
+            result = {
                 'timestamp': int(timestamp),
                 'stream': stream_type,
                 'message': message
             }
+            app_logger.info(f"[parse_log_line] 解析成功: {result}")
+            return result
         except Exception as e:
-            app_logger.debug(f"Error parsing log line: {e}")
+            app_logger.error(f"[parse_log_line] 解析过程中发生异常: {e}")
+            app_logger.error(f"[parse_log_line] 异常堆栈:\n{traceback.format_exc()}")
             return None
     
     def get_container_logs_paginated(
