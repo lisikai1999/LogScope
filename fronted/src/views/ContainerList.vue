@@ -10,12 +10,20 @@
             </svg>
             <div>
               <h1>Docker 日志查看器</h1>
-              <p>日志查看工具</p>
+              <p>容器管理</p>
             </div>
           </div>
-          <button class="btn btn-outline" @click="fetchContainers">
-            刷新
-          </button>
+          <div class="header-actions">
+            <router-link to="/dashboard" class="btn btn-outline">
+              Dashboard
+            </router-link>
+            <router-link to="/multi-logs" class="btn btn-primary">
+              多容器日志聚合
+            </router-link>
+            <button class="btn btn-outline" @click="fetchContainers">
+              刷新
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -28,6 +36,7 @@
           <div class="controls">
             <div class="search-box">
               <input
+                ref="searchInputRef"
                 type="text"
                 v-model="searchQuery"
                 placeholder="搜索容器名称、镜像或 ID..."
@@ -75,7 +84,11 @@
                     {{ searchQuery ? '没有找到匹配的容器' : '暂无容器' }}
                   </td>
                 </tr>
-                <tr v-for="container in containers" :key="container.id">
+                <tr 
+                  v-for="(container, index) in containers" 
+                  :key="container.id"
+                  :class="{ 'row-selected': selectedIndex === index }"
+                >
                   <td>
                     <div
                       class="status-dot"
@@ -137,8 +150,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import axios from 'axios'
+import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
+
+const router = useRouter()
+const { register } = useKeyboardShortcuts('container-list')
 
 const containers = ref([])
 const loading = ref(true)
@@ -150,6 +168,9 @@ const currentPage = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 const totalPages = ref(0)
+
+const searchInputRef = ref(null)
+const selectedIndex = ref(-1)
 
 const fetchContainers = async () => {
   try {
@@ -172,6 +193,7 @@ const fetchContainers = async () => {
       containers.value = response.data.data
       total.value = response.data.total
       totalPages.value = response.data.total_pages
+      selectedIndex.value = -1
     } else {
       error.value = response.data.error || '获取容器列表失败'
     }
@@ -243,8 +265,112 @@ watch(currentPage, () => {
   }
 })
 
+const focusSearch = () => {
+  if (searchInputRef.value) {
+    searchInputRef.value.focus()
+    searchInputRef.value.select()
+  }
+}
+
+const selectUp = () => {
+  if (containers.value.length === 0) return
+  if (selectedIndex.value <= 0) {
+    if (currentPage.value > 1) {
+      prevPage()
+      nextTick(() => {
+        selectedIndex.value = containers.value.length - 1
+      })
+    } else {
+      selectedIndex.value = 0
+    }
+  } else {
+    selectedIndex.value--
+  }
+  scrollSelectedIntoView()
+}
+
+const selectDown = () => {
+  if (containers.value.length === 0) return
+  if (selectedIndex.value === -1) {
+    selectedIndex.value = 0
+  } else if (selectedIndex.value >= containers.value.length - 1) {
+    if (currentPage.value < totalPages.value) {
+      nextPage()
+      nextTick(() => {
+        selectedIndex.value = 0
+      })
+    } else {
+      selectedIndex.value = containers.value.length - 1
+    }
+  } else {
+    selectedIndex.value++
+  }
+  scrollSelectedIntoView()
+}
+
+const scrollSelectedIntoView = () => {
+  nextTick(() => {
+    const selectedRow = document.querySelector('.row-selected')
+    if (selectedRow) {
+      selectedRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  })
+}
+
+const viewSelectedLogs = () => {
+  if (selectedIndex.value >= 0 && selectedIndex.value < containers.value.length) {
+    const container = containers.value[selectedIndex.value]
+    router.push(`/containers/${container.id}`)
+  }
+}
+
+const setupShortcuts = () => {
+  register({
+    key: 'f',
+    ctrl: true,
+    description: '聚焦搜索框',
+    handler: focusSearch,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'r',
+    ctrl: true,
+    description: '刷新列表',
+    handler: fetchContainers,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'ArrowUp',
+    description: '向上选择容器',
+    handler: selectUp,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'ArrowDown',
+    description: '向下选择容器',
+    handler: selectDown,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'Enter',
+    description: '查看日志',
+    handler: viewSelectedLogs,
+    allowInInput: false,
+    preventDefault: true
+  })
+}
+
 onMounted(() => {
   fetchContainers()
+  setupShortcuts()
 })
 </script>
 
@@ -282,6 +408,12 @@ onMounted(() => {
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin: 0;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
 }
 
 .main-content {
@@ -395,6 +527,14 @@ onMounted(() => {
 
 .table tr:last-child td {
   border-bottom: none;
+}
+
+.row-selected {
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+.row-selected td {
+  border-bottom-color: var(--primary-color);
 }
 
 .status-dot {
