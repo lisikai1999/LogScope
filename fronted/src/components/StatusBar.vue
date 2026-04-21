@@ -1,7 +1,12 @@
 <template>
   <div class="status-bar">
-    <div class="status-bar-content">
-      <div class="shortcuts-section">
+    <div class="status-bar-content" :class="{ 'center-content': isInputFocused }">
+      <div v-if="isInputFocused" class="status-section-centered">
+        <span class="status-text">
+          ⚠️ 输入框已聚焦，全局快捷键暂时禁用
+        </span>
+      </div>
+      <div v-else class="shortcuts-section">
         <span class="shortcuts-label">快捷键:</span>
         <div class="shortcuts-list">
           <div 
@@ -13,11 +18,6 @@
             <span class="shortcut-desc">{{ shortcut.description }}</span>
           </div>
         </div>
-      </div>
-      <div class="status-section">
-        <span class="status-text" v-if="isInputFocused">
-          ⚠️ 输入框已聚焦，全局快捷键暂时禁用
-        </span>
       </div>
     </div>
   </div>
@@ -86,6 +86,10 @@ onUnmounted(() => {
   gap: 0.5rem;
 }
 
+.status-bar-content.center-content {
+  justify-content: center;
+}
+
 .shortcuts-section {
   display: flex;
   align-items: center;
@@ -127,9 +131,10 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-.status-section {
+.status-section-centered {
   display: flex;
   align-items: center;
+  justify-content: center;
 }
 
 .status-text {
