@@ -951,6 +951,343 @@ class DockerService:
                 raise
             raise ContainerOperationError(f"停止容器失败: {str(e)}")
     
+    def restart_container(self, container_id: str) -> bool:
+        """重启容器"""
+        if not self.docker_available:
+            app_logger.warning("Docker is not available in demo mode")
+            raise DockerServiceError("Docker 服务不可用")
+        
+        try:
+            container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("restart_container", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            container.restart()
+            return True
+        except Exception as e:
+            log_service_error("restart_container", e, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"重启容器失败: {str(e)}")
+    
+    def delete_container(self, container_id: str, force: bool = False) -> bool:
+        """删除容器"""
+        if not self.docker_available:
+            app_logger.warning("Docker is not available in demo mode")
+            raise DockerServiceError("Docker 服务不可用")
+        
+        try:
+            container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("delete_container", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            container.remove(force=force)
+            return True
+        except Exception as e:
+            log_service_error("delete_container", e, container_id=container_id, force=force)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"删除容器失败: {str(e)}")
+    
+    def get_container_full_info(self, container_id: str) -> Dict[str, Any]:
+        """获取容器完整配置信息"""
+        if not self.docker_available:
+            return self._get_mock_container_full_info(container_id)
+        
+        try:
+            container = self.client.containers.get(container_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"容器不存在: {container_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_container_full_info", e, container_id=container_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            attrs = container.attrs
+            
+            image_name = '<unknown>'
+            try:
+                if container.image:
+                    if container.image.tags and len(container.image.tags) > 0:
+                        image_name = container.image.tags[0]
+                    else:
+                        image_id = attrs.get('Image', '')
+                        if image_id.startswith('sha256:'):
+                            image_name = image_id[7:19]
+                        else:
+                            image_name = image_id[:12] if image_id else '<unknown>'
+            except Exception as img_e:
+                app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
+                config_image = attrs.get('Config', {}).get('Image', '')
+                if config_image:
+                    image_name = config_image
+                else:
+                    image_id = attrs.get('Image', '')
+                    if image_id.startswith('sha256:'):
+                        image_name = image_id[7:19]
+                    else:
+                        image_name = image_id[:12] if image_id else '<unknown>'
+            
+            network_settings = attrs.get('NetworkSettings', {})
+            ports = network_settings.get('Ports', {})
+            networks = network_settings.get('Networks', {})
+            
+            port_mappings = []
+            for container_port, host_mappings in ports.items():
+                if host_mappings:
+                    for mapping in host_mappings:
+                        if mapping:
+                            port_mappings.append({
+                                'container_port': container_port,
+                                'host_ip': mapping.get('HostIp', '0.0.0.0'),
+                                'host_port': mapping.get('HostPort', '')
+                            })
+            
+            network_info = []
+            for net_name, net_config in networks.items():
+                network_info.append({
+                    'name': net_name,
+                    'ip_address': net_config.get('IPAddress', ''),
+                    'mac_address': net_config.get('MacAddress', ''),
+                    'gateway': net_config.get('Gateway', '')
+                })
+            
+            config = attrs.get('Config', {})
+            host_config = attrs.get('HostConfig', {})
+            
+            mounts = []
+            for mount in attrs.get('Mounts', []):
+                mounts.append({
+                    'type': mount.get('Type', ''),
+                    'source': mount.get('Source', ''),
+                    'destination': mount.get('Destination', ''),
+                    'mode': mount.get('Mode', ''),
+                    'rw': mount.get('RW', False)
+                })
+            
+            env_vars = []
+            for env in config.get('Env', []):
+                parts = env.split('=', 1)
+                if len(parts) == 2:
+                    env_vars.append({
+                        'key': parts[0],
+                        'value': parts[1]
+                    })
+                else:
+                    env_vars.append({
+                        'key': env,
+                        'value': ''
+                    })
+            
+            return {
+                'id': container.id,
+                'name': container.name.replace('/', ''),
+                'image': image_name,
+                'image_id': attrs.get('Image', ''),
+                'state': container.status,
+                'status': attrs.get('State', {}).get('Status', ''),
+                'running': attrs.get('State', {}).get('Running', False),
+                'paused': attrs.get('State', {}).get('Paused', False),
+                'restarting': attrs.get('State', {}).get('Restarting', False),
+                'exit_code': attrs.get('State', {}).get('ExitCode', 0),
+                'error': attrs.get('State', {}).get('Error', ''),
+                'started_at': attrs.get('State', {}).get('StartedAt', ''),
+                'finished_at': attrs.get('State', {}).get('FinishedAt', ''),
+                'created': attrs.get('Created', ''),
+                'path': config.get('Entrypoint', []) or config.get('Cmd', []),
+                'command': config.get('Cmd', []),
+                'working_dir': config.get('WorkingDir', ''),
+                'user': config.get('User', ''),
+                'env': env_vars,
+                'labels': config.get('Labels', {}),
+                'exposed_ports': list(config.get('ExposedPorts', {}).keys()) if config.get('ExposedPorts') else [],
+                'port_mappings': port_mappings,
+                'networks': network_info,
+                'mounts': mounts,
+                'restart_policy': host_config.get('RestartPolicy', {}).get('Name', ''),
+                'memory_limit': host_config.get('Memory', 0),
+                'memory_reservation': host_config.get('MemoryReservation', 0),
+                'cpu_shares': host_config.get('CpuShares', 0),
+                'cpus': host_config.get('NanoCpus', 0) / 1e9 if host_config.get('NanoCpus') else 0,
+                'privileged': host_config.get('Privileged', False),
+                'readonly_rootfs': host_config.get('ReadonlyRootfs', False),
+                'dns': host_config.get('Dns', []),
+                'extra_hosts': host_config.get('ExtraHosts', []),
+                'volumes_from': host_config.get('VolumesFrom', []),
+                'log_config': host_config.get('LogConfig', {})
+            }
+        except Exception as e:
+            log_service_error("get_container_full_info", e, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取容器完整信息失败: {str(e)}")
+    
+    def get_image_layers(self, image_name_or_id: str) -> Dict[str, Any]:
+        """获取镜像层信息"""
+        if not self.docker_available:
+            return self._get_mock_image_layers(image_name_or_id)
+        
+        try:
+            image = self.client.images.get(image_name_or_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image_name_or_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_image_layers", e, image_name=image_name_or_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            layers = []
+            history = image.history()
+            
+            for i, layer in enumerate(reversed(history)):
+                layers.append({
+                    'id': layer.get('Id', '')[:19] if layer.get('Id') else f'<missing:{i}>',
+                    'created': layer.get('Created', 0),
+                    'created_by': layer.get('CreatedBy', ''),
+                    'size': layer.get('Size', 0),
+                    'comment': layer.get('Comment', ''),
+                    'tags': layer.get('Tags', [])
+                })
+            
+            total_size = sum(layer['size'] for layer in layers)
+            
+            return {
+                'id': image.id,
+                'tags': image.tags,
+                'created': image.attrs.get('Created', ''),
+                'os': image.attrs.get('Os', ''),
+                'architecture': image.attrs.get('Architecture', ''),
+                'total_size': total_size,
+                'layers': layers,
+                'layer_count': len(layers)
+            }
+        except Exception as e:
+            log_service_error("get_image_layers", e, image_name=image_name_or_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取镜像层信息失败: {str(e)}")
+    
+    def _get_mock_container_full_info(self, container_id: str) -> Dict[str, Any]:
+        """返回模拟的容器完整信息"""
+        import time
+        
+        return {
+            'id': container_id,
+            'name': 'web-app',
+            'image': 'nginx:latest',
+            'image_id': 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+            'state': 'running',
+            'status': 'running',
+            'running': True,
+            'paused': False,
+            'restarting': False,
+            'exit_code': 0,
+            'error': '',
+            'started_at': '2024-01-15T10:30:00Z',
+            'finished_at': '',
+            'created': '2024-01-15T10:00:00Z',
+            'path': ['nginx'],
+            'command': ['-g', 'daemon off;'],
+            'working_dir': '',
+            'user': '',
+            'env': [
+                {'key': 'NGINX_VERSION', 'value': '1.25.3'},
+                {'key': 'PATH', 'value': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'}
+            ],
+            'labels': {
+                'maintainer': 'NGINX Docker Maintainers <docker-maint@nginx.com>'
+            },
+            'exposed_ports': ['80/tcp'],
+            'port_mappings': [
+                {'container_port': '80/tcp', 'host_ip': '0.0.0.0', 'host_port': '8080'}
+            ],
+            'networks': [
+                {'name': 'bridge', 'ip_address': '172.17.0.2', 'mac_address': '02:42:ac:11:00:02', 'gateway': '172.17.0.1'}
+            ],
+            'mounts': [
+                {'type': 'bind', 'source': '/host/path', 'destination': '/container/path', 'mode': 'rw', 'rw': True}
+            ],
+            'restart_policy': 'always',
+            'memory_limit': 1073741824,
+            'memory_reservation': 0,
+            'cpu_shares': 1024,
+            'cpus': 2,
+            'privileged': False,
+            'readonly_rootfs': False,
+            'dns': [],
+            'extra_hosts': [],
+            'volumes_from': [],
+            'log_config': {'Type': 'json-file', 'Config': {}}
+        }
+    
+    def _get_mock_image_layers(self, image_name: str) -> Dict[str, Any]:
+        """返回模拟的镜像层信息"""
+        import time
+        
+        layers = [
+            {
+                'id': 'sha256:abcdef0000000000000000000000000000000000000000000000000000001',
+                'created': int(time.time()) - 86400 * 30,
+                'created_by': '/bin/sh -c #(nop) ADD file:abcdef...',
+                'size': 77800000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000002',
+                'created': int(time.time()) - 86400 * 28,
+                'created_by': '/bin/sh -c apt-get update && apt-get install -y nginx',
+                'size': 15600000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000003',
+                'created': int(time.time()) - 86400 * 27,
+                'created_by': '/bin/sh -c #(nop) COPY file:xyz...',
+                'size': 2500000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000004',
+                'created': int(time.time()) - 86400 * 26,
+                'created_by': '/bin/sh -c #(nop) EXPOSE 80',
+                'size': 0,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000005',
+                'created': int(time.time()) - 86400 * 25,
+                'created_by': '/bin/sh -c #(nop) CMD [\"nginx\" \"-g\" \"daemon off;\"]',
+                'size': 0,
+                'comment': '',
+                'tags': ['nginx:latest']
+            }
+        ]
+        
+        total_size = sum(layer['size'] for layer in layers)
+        
+        return {
+            'id': 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+            'tags': ['nginx:latest', 'nginx:1.25'],
+            'created': '2024-01-10T00:00:00Z',
+            'os': 'linux',
+            'architecture': 'amd64',
+            'total_size': total_size,
+            'layers': layers,
+            'layer_count': len(layers)
+        }
+    
     def get_container_stats(self, container_id: str) -> Dict[str, Any]:
         """获取容器统计信息（CPU、内存、网络 I/O）"""
         if not self.docker_available:

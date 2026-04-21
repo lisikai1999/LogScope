@@ -108,14 +108,109 @@
                       {{ container.status }}
                     </span>
                   </td>
-                  <td class="text-muted">{{ container.created }}</td>
+                  <td class="text-muted">{{ formatDate(container.created) }}</td>
                   <td class="text-right">
-                    <router-link
-                      :to="`/containers/${container.id}`"
-                      class="btn btn-ghost btn-sm"
-                    >
-                      查看日志
-                    </router-link>
+                    <div class="action-buttons">
+                      <button
+                        v-if="container.state !== 'running'"
+                        class="btn btn-success btn-sm action-btn"
+                        @click="startContainer(container)"
+                        :disabled="operationInProgress === container.id"
+                        title="启动容器"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                      </button>
+                      <button
+                        v-if="container.state === 'running'"
+                        class="btn btn-warning btn-sm action-btn"
+                        @click="stopContainer(container)"
+                        :disabled="operationInProgress === container.id"
+                        title="停止容器"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect x="6" y="4" width="4" height="16"></rect>
+                          <rect x="14" y="4" width="4" height="16"></rect>
+                        </svg>
+                      </button>
+                      <router-link
+                        :to="`/containers/${container.id}`"
+                        class="btn btn-ghost btn-sm action-btn"
+                        title="查看日志"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                          <polyline points="14 2 14 8 20 8"></polyline>
+                          <line x1="16" y1="13" x2="8" y2="13"></line>
+                          <line x1="16" y1="17" x2="8" y2="17"></line>
+                          <polyline points="10 9 9 9 8 9"></polyline>
+                        </svg>
+                      </router-link>
+                      
+                      <div class="dropdown" :class="{ 'dropdown-open': openDropdown === container.id }">
+                        <button 
+                          class="btn btn-ghost btn-sm action-btn"
+                          @click="toggleDropdown(container.id)"
+                          title="更多操作"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="1"></circle>
+                            <circle cx="12" cy="5" r="1"></circle>
+                            <circle cx="12" cy="19" r="1"></circle>
+                          </svg>
+                        </button>
+                        <div class="dropdown-menu" v-if="openDropdown === container.id">
+                          <button 
+                            class="dropdown-item"
+                            @click="restartContainer(container)"
+                            :disabled="operationInProgress === container.id"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <polyline points="23 4 23 10 17 10"></polyline>
+                              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                            </svg>
+                            重启容器
+                          </button>
+                          <button 
+                            class="dropdown-item"
+                            @click="viewContainerDetails(container)"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                              <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                            查看详情
+                          </button>
+                          <button 
+                            class="dropdown-item"
+                            @click="viewImageLayers(container)"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <rect x="3" y="1" width="18" height="18" rx="2" ry="2"></rect>
+                              <line x1="9" y1="9" x2="15" y2="9"></line>
+                              <line x1="9" y1="15" x2="15" y2="15"></line>
+                              <line x1="12" y1="6" x2="12" y2="18"></line>
+                            </svg>
+                            镜像层信息
+                          </button>
+                          <div class="dropdown-divider"></div>
+                          <button 
+                            class="dropdown-item dropdown-danger"
+                            @click="confirmDeleteContainer(container)"
+                            :disabled="operationInProgress === container.id"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                              <line x1="10" y1="11" x2="10" y2="17"></line>
+                              <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                            删除容器
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -146,11 +241,403 @@
         </div>
       </div>
     </main>
+
+    <!-- Container Details Modal -->
+    <div v-if="showDetailsModal" class="modal-overlay" @click.self="closeDetailsModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3 class="modal-title">容器详情 - {{ currentContainer?.name || currentContainer?.names?.[0]?.replace(/^\//, '') || 'N/A' }}</h3>
+          <button class="modal-close" @click="closeDetailsModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body modal-scrollable">
+          <div v-if="loadingDetails" class="loading-details">
+            <div class="loading-spinner"></div>
+            <p>加载中...</p>
+          </div>
+          <div v-else-if="containerDetails">
+            <div class="details-section">
+              <h4 class="section-title">基本信息</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">容器 ID</span>
+                  <span class="detail-value font-mono">{{ containerDetails.id }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">名称</span>
+                  <span class="detail-value">{{ containerDetails.name }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">镜像</span>
+                  <span class="detail-value">{{ containerDetails.image }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">状态</span>
+                  <span class="detail-value">
+                    <span class="badge" :class="containerDetails.running ? 'badge-success' : 'badge-secondary'">
+                      {{ containerDetails.status }}
+                    </span>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">运行状态</span>
+                  <span class="detail-value">
+                    {{ containerDetails.running ? '运行中' : '已停止' }}
+                    <span v-if="containerDetails.paused" class="text-warning ml-2">(已暂停)</span>
+                    <span v-if="containerDetails.restarting" class="text-warning ml-2">(重启中)</span>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">退出代码</span>
+                  <span class="detail-value">{{ containerDetails.exit_code }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">创建时间</span>
+                  <span class="detail-value">{{ containerDetails.created }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">启动时间</span>
+                  <span class="detail-value">{{ containerDetails.started_at || 'N/A' }}</span>
+                </div>
+                <div v-if="containerDetails.finished_at" class="detail-item">
+                  <span class="detail-label">结束时间</span>
+                  <span class="detail-value">{{ containerDetails.finished_at }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="details-section">
+              <h4 class="section-title">配置信息</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">工作目录</span>
+                  <span class="detail-value">{{ containerDetails.working_dir || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">用户</span>
+                  <span class="detail-value">{{ containerDetails.user || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">重启策略</span>
+                  <span class="detail-value">{{ containerDetails.restart_policy || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">特权模式</span>
+                  <span class="detail-value">{{ containerDetails.privileged ? '是' : '否' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">只读根文件系统</span>
+                  <span class="detail-value">{{ containerDetails.readonly_rootfs ? '是' : '否' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="details-section">
+              <h4 class="section-title">资源限制</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">内存限制</span>
+                  <span class="detail-value">{{ formatBytes(containerDetails.memory_limit) || '无限制' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">内存预留</span>
+                  <span class="detail-value">{{ formatBytes(containerDetails.memory_reservation) || '无' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">CPU 份额</span>
+                  <span class="detail-value">{{ containerDetails.cpu_shares || '默认' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">CPU 数量</span>
+                  <span class="detail-value">{{ containerDetails.cpus || '无限制' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.command && containerDetails.command.length > 0" class="details-section">
+              <h4 class="section-title">启动命令</h4>
+              <div class="code-block">
+                <pre>{{ containerDetails.command.join(' ') }}</pre>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.env && containerDetails.env.length > 0" class="details-section">
+              <h4 class="section-title">环境变量</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>键</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(env, idx) in containerDetails.env" :key="idx">
+                      <td class="font-mono">{{ env.key }}</td>
+                      <td class="font-mono">{{ env.value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.port_mappings && containerDetails.port_mappings.length > 0" class="details-section">
+              <h4 class="section-title">端口映射</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>容器端口</th>
+                      <th>主机 IP</th>
+                      <th>主机端口</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(port, idx) in containerDetails.port_mappings" :key="idx">
+                      <td>{{ port.container_port }}</td>
+                      <td>{{ port.host_ip || '0.0.0.0' }}</td>
+                      <td>{{ port.host_port }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.networks && containerDetails.networks.length > 0" class="details-section">
+              <h4 class="section-title">网络配置</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>网络</th>
+                      <th>IP 地址</th>
+                      <th>MAC 地址</th>
+                      <th>网关</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(net, idx) in containerDetails.networks" :key="idx">
+                      <td>{{ net.name }}</td>
+                      <td class="font-mono">{{ net.ip_address || 'N/A' }}</td>
+                      <td class="font-mono">{{ net.mac_address || 'N/A' }}</td>
+                      <td class="font-mono">{{ net.gateway || 'N/A' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.mounts && containerDetails.mounts.length > 0" class="details-section">
+              <h4 class="section-title">挂载点</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>类型</th>
+                      <th>源</th>
+                      <th>目标</th>
+                      <th>模式</th>
+                      <th>读写</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(mount, idx) in containerDetails.mounts" :key="idx">
+                      <td>{{ mount.type }}</td>
+                      <td class="font-mono">{{ mount.source }}</td>
+                      <td class="font-mono">{{ mount.destination }}</td>
+                      <td>{{ mount.mode || 'N/A' }}</td>
+                      <td>
+                        <span :class="mount.rw ? 'text-success' : 'text-muted'">
+                          {{ mount.rw ? '读写' : '只读' }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.labels && Object.keys(containerDetails.labels).length > 0" class="details-section">
+              <h4 class="section-title">标签</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>键</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(value, key) in containerDetails.labels" :key="key">
+                      <td class="font-mono">{{ key }}</td>
+                      <td class="font-mono">{{ value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.log_config" class="details-section">
+              <h4 class="section-title">日志配置</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">日志驱动</span>
+                  <span class="detail-value">{{ containerDetails.log_config.Type || 'N/A' }}</span>
+                </div>
+              </div>
+              <div v-if="containerDetails.log_config.Config && Object.keys(containerDetails.log_config.Config).length > 0" class="table-container mt-2">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>配置项</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(value, key) in containerDetails.log_config.Config" :key="key">
+                      <td class="font-mono">{{ key }}</td>
+                      <td class="font-mono">{{ value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="closeDetailsModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Image Layers Modal -->
+    <div v-if="showImageLayersModal" class="modal-overlay" @click.self="closeImageLayersModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3 class="modal-title">镜像层信息 - {{ currentContainer?.image || 'N/A' }}</h3>
+          <button class="modal-close" @click="closeImageLayersModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body modal-scrollable">
+          <div v-if="loadingImageLayers" class="loading-details">
+            <div class="loading-spinner"></div>
+            <p>加载中...</p>
+          </div>
+          <div v-else-if="imageLayersData">
+            <div class="details-section">
+              <h4 class="section-title">镜像信息</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">镜像 ID</span>
+                  <span class="detail-value font-mono">{{ imageLayersData.id }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">标签</span>
+                  <span class="detail-value">{{ imageLayersData.tags?.join(', ') || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">操作系统</span>
+                  <span class="detail-value">{{ imageLayersData.os || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">架构</span>
+                  <span class="detail-value">{{ imageLayersData.architecture || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">创建时间</span>
+                  <span class="detail-value">{{ imageLayersData.created || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">总大小</span>
+                  <span class="detail-value">{{ formatBytes(imageLayersData.total_size) }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">层数</span>
+                  <span class="detail-value">{{ imageLayersData.layer_count }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="details-section">
+              <h4 class="section-title">镜像层详情 (从底层到顶层)</h4>
+              <div v-if="imageLayersData.layers && imageLayersData.layers.length > 0" class="layers-list">
+                <div 
+                  v-for="(layer, idx) in imageLayersData.layers" 
+                  :key="idx" 
+                  class="layer-item"
+                  :class="{ 'layer-top': idx === imageLayersData.layers.length - 1 }"
+                >
+                  <div class="layer-header">
+                    <div class="layer-index">
+                      <span class="layer-number">Layer {{ idx + 1 }}</span>
+                      <span v-if="layer.tags && layer.tags.length > 0" class="layer-tag badge badge-primary">{{ layer.tags[0] }}</span>
+                    </div>
+                    <div class="layer-size">{{ formatBytes(layer.size) }}</div>
+                  </div>
+                  <div class="layer-command">
+                    <div class="code-block">
+                      <pre>{{ layer.created_by || 'N/A' }}</pre>
+                    </div>
+                  </div>
+                  <div class="layer-meta">
+                    <span class="layer-id font-mono">{{ layer.id }}</span>
+                    <span class="layer-time">{{ formatTimestamp(layer.created) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="closeImageLayersModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="cancelDelete">
+      <div class="modal modal-small">
+        <div class="modal-header">
+          <h3 class="modal-title">确认删除容器</h3>
+        </div>
+        <div class="modal-body">
+          <p class="delete-warning">
+            确定要删除容器 <strong>{{ currentContainer?.names?.[0]?.replace(/^\//, '') || currentContainer?.name }}</strong> 吗？
+          </p>
+          <p class="delete-info">
+            此操作不可撤销。
+          </p>
+          <div v-if="currentContainer?.state === 'running'" class="checkbox-label mt-2">
+            <input type="checkbox" v-model="forceDelete" id="forceDelete" />
+            <label for="forceDelete">强制删除（终止并删除运行中的容器）</label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="cancelDelete">取消</button>
+          <button class="btn btn-danger" @click="executeDeleteContainer">
+            {{ operationInProgress === currentContainer?.id ? '删除中...' : '确认删除' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div v-if="toastMessage" class="toast" :class="toastType">
+      {{ toastMessage }}
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, watch, nextTick, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
@@ -171,6 +658,34 @@ const totalPages = ref(0)
 
 const searchInputRef = ref(null)
 const selectedIndex = ref(-1)
+
+const openDropdown = ref(null)
+const operationInProgress = ref(null)
+
+const showDetailsModal = ref(false)
+const showImageLayersModal = ref(false)
+const showDeleteConfirm = ref(false)
+const currentContainer = ref(null)
+const containerDetails = ref(null)
+const imageLayersData = ref(null)
+const loadingDetails = ref(false)
+const loadingImageLayers = ref(false)
+const forceDelete = ref(false)
+
+const toastMessage = ref('')
+const toastType = ref('success')
+let toastTimeout = null
+
+const showToast = (message, type = 'success') => {
+  if (toastTimeout) {
+    clearTimeout(toastTimeout)
+  }
+  toastMessage.value = message
+  toastType.value = type
+  toastTimeout = setTimeout(() => {
+    toastMessage.value = ''
+  }, 3000)
+}
 
 const fetchContainers = async () => {
   try {
@@ -210,7 +725,23 @@ const getContainerName = (names) => {
 }
 
 const formatDate = (timestamp) => {
-  return new Date(timestamp * 1000).toLocaleString('zh-CN')
+  if (!timestamp) return 'N/A'
+  const date = new Date(timestamp)
+  return date.toLocaleString('zh-CN')
+}
+
+const formatBytes = (bytes) => {
+  if (bytes === 0 || !bytes) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+const formatTimestamp = (timestamp) => {
+  if (!timestamp) return 'N/A'
+  const date = new Date(timestamp * 1000)
+  return date.toLocaleString('zh-CN')
 }
 
 const getStatusClass = (state) => {
@@ -240,6 +771,168 @@ const prevPage = () => {
     currentPage.value--
     fetchContainers()
   }
+}
+
+const toggleDropdown = (containerId) => {
+  if (openDropdown.value === containerId) {
+    openDropdown.value = null
+  } else {
+    openDropdown.value = containerId
+  }
+}
+
+const closeDropdowns = (event) => {
+  if (openDropdown.value) {
+    const dropdown = event.target.closest('.dropdown')
+    if (!dropdown) {
+      openDropdown.value = null
+    }
+  }
+}
+
+const startContainer = async (container) => {
+  try {
+    operationInProgress.value = container.id
+    const response = await axios.post(`/api/containers/${container.id}/start`)
+    if (response.data.success) {
+      showToast('容器启动成功', 'success')
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '启动容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '启动容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+    openDropdown.value = null
+  }
+}
+
+const stopContainer = async (container) => {
+  try {
+    operationInProgress.value = container.id
+    const response = await axios.post(`/api/containers/${container.id}/stop`)
+    if (response.data.success) {
+      showToast('容器停止成功', 'success')
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '停止容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '停止容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+    openDropdown.value = null
+  }
+}
+
+const restartContainer = async (container) => {
+  try {
+    operationInProgress.value = container.id
+    const response = await axios.post(`/api/containers/${container.id}/restart`)
+    if (response.data.success) {
+      showToast('容器重启成功', 'success')
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '重启容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '重启容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+    openDropdown.value = null
+  }
+}
+
+const confirmDeleteContainer = (container) => {
+  currentContainer.value = container
+  forceDelete.value = container.state === 'running'
+  showDeleteConfirm.value = true
+  openDropdown.value = null
+}
+
+const cancelDelete = () => {
+  showDeleteConfirm.value = false
+  currentContainer.value = null
+  forceDelete.value = false
+}
+
+const executeDeleteContainer = async () => {
+  if (!currentContainer.value) return
+  
+  try {
+    operationInProgress.value = currentContainer.value.id
+    const response = await axios.post(`/api/containers/${currentContainer.value.id}/delete`, null, {
+      params: { force: forceDelete.value }
+    })
+    if (response.data.success) {
+      showToast('容器删除成功', 'success')
+      showDeleteConfirm.value = false
+      currentContainer.value = null
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '删除容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '删除容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+  }
+}
+
+const viewContainerDetails = async (container) => {
+  currentContainer.value = container
+  openDropdown.value = null
+  showDetailsModal.value = true
+  loadingDetails.value = true
+  containerDetails.value = null
+  
+  try {
+    const response = await axios.get(`/api/containers/${container.id}/full-info`)
+    if (response.data.success) {
+      containerDetails.value = response.data.data
+    } else {
+      showToast('获取容器详情失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '获取容器详情失败', 'error')
+  } finally {
+    loadingDetails.value = false
+  }
+}
+
+const closeDetailsModal = () => {
+  showDetailsModal.value = false
+  containerDetails.value = null
+  currentContainer.value = null
+}
+
+const viewImageLayers = async (container) => {
+  currentContainer.value = container
+  openDropdown.value = null
+  showImageLayersModal.value = true
+  loadingImageLayers.value = true
+  imageLayersData.value = null
+  
+  try {
+    const imageName = container.image
+    const response = await axios.get(`/api/images/${encodeURIComponent(imageName)}/layers`)
+    if (response.data.success) {
+      imageLayersData.value = response.data.data
+    } else {
+      showToast('获取镜像层信息失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '获取镜像层信息失败', 'error')
+  } finally {
+    loadingImageLayers.value = false
+  }
+}
+
+const closeImageLayersModal = () => {
+  showImageLayersModal.value = false
+  imageLayersData.value = null
+  currentContainer.value = null
 }
 
 watch(showAll, (newValue) => {
@@ -371,6 +1064,14 @@ const setupShortcuts = () => {
 onMounted(() => {
   fetchContainers()
   setupShortcuts()
+  document.addEventListener('click', closeDropdowns)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeDropdowns)
+  if (toastTimeout) {
+    clearTimeout(toastTimeout)
+  }
 })
 </script>
 
@@ -595,6 +1296,11 @@ onMounted(() => {
   color: white;
 }
 
+.badge-primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -611,11 +1317,16 @@ onMounted(() => {
   transition: all 0.2s;
 }
 
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .btn-outline {
   border: 1px solid var(--border-color);
 }
 
-.btn-outline:hover {
+.btn-outline:hover:not(:disabled) {
   background-color: var(--bg-secondary);
 }
 
@@ -623,13 +1334,60 @@ onMounted(() => {
   background-color: transparent;
 }
 
-.btn-ghost:hover {
+.btn-ghost:hover:not(:disabled) {
   background-color: var(--bg-secondary);
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #2563eb;
+}
+
+.btn-success {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+  background-color: #059669;
+}
+
+.btn-warning {
+  background-color: var(--warning-color);
+  color: white;
+}
+
+.btn-warning:hover:not(:disabled) {
+  background-color: #d97706;
+}
+
+.btn-danger {
+  background-color: var(--error-color);
+  color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #dc2626;
 }
 
 .btn-sm {
   padding: 0.25rem 0.5rem;
   font-size: 0.75rem;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.25rem;
+  justify-content: flex-end;
+}
+
+.action-btn {
+  min-width: 28px;
+  padding: 0.25rem;
 }
 
 .empty-state {
@@ -684,5 +1442,413 @@ onMounted(() => {
   font-size: 0.875rem;
   color: var(--text-secondary);
   padding: 0 0.5rem;
+}
+
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 0.25rem;
+  min-width: 160px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  padding: 0.25rem 0;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  text-align: left;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.dropdown-item:hover:not(:disabled) {
+  background-color: var(--bg-secondary);
+}
+
+.dropdown-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dropdown-item.dropdown-danger {
+  color: var(--error-color);
+}
+
+.dropdown-item.dropdown-danger:hover:not(:disabled) {
+  background-color: rgba(239, 68, 68, 0.1);
+}
+
+.dropdown-icon {
+  flex-shrink: 0;
+}
+
+.dropdown-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 0.25rem 0;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 1rem;
+}
+
+.modal {
+  background-color: var(--bg-primary);
+  border-radius: 0.5rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-large {
+  width: 900px;
+}
+
+.modal-small {
+  width: 400px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.modal-scrollable {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.loading-details {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  color: var(--text-secondary);
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--primary-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.details-section {
+  margin-bottom: 1.5rem;
+}
+
+.details-section:last-child {
+  margin-bottom: 0;
+}
+
+.section-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 0.75rem 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.75rem;
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.detail-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.detail-value {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.code-block {
+  background-color: var(--bg-secondary);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+
+.code-block pre {
+  margin: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.details-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.details-table th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.details-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.details-table tr:last-child td {
+  border-bottom: none;
+}
+
+.mt-2 {
+  margin-top: 0.5rem;
+}
+
+.text-success {
+  color: var(--success-color);
+}
+
+.text-warning {
+  color: var(--warning-color);
+}
+
+.ml-2 {
+  margin-left: 0.5rem;
+}
+
+.delete-warning {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.delete-warning strong {
+  color: var(--error-color);
+}
+
+.delete-info {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.layers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.layer-item {
+  background-color: var(--bg-secondary);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+}
+
+.layer-item.layer-top {
+  border-color: var(--primary-color);
+}
+
+.layer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.layer-index {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.layer-number {
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
+.layer-tag {
+  font-size: 0.7rem;
+}
+
+.layer-size {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.layer-command {
+  margin-bottom: 0.5rem;
+}
+
+.layer-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.layer-time {
+  text-align: right;
+}
+
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  z-index: 3000;
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.toast.success {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.toast.error {
+  background-color: var(--error-color);
+  color: white;
+}
+
+@media (max-width: 768px) {
+  .header-content {
+    flex-direction: column;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .stats-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .container-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal {
+    max-width: 100%;
+    max-height: 95vh;
+  }
+
+  .modal-large {
+    width: 100%;
+  }
+
+  .modal-small {
+    width: 100%;
+  }
+
+  .details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .action-buttons {
+    flex-wrap: wrap;
+  }
 }
 </style>

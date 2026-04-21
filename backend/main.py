@@ -247,6 +247,70 @@ async def stop_container(container_id: str):
         raise
 
 
+@app.post("/api/containers/{container_id}/restart")
+async def restart_container(container_id: str):
+    """重启容器"""
+    try:
+        success = docker_service.restart_container(container_id)
+        return {
+            "success": success,
+            "message": "容器重启成功"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("restart_container", e, container_id=container_id)
+        raise
+
+
+@app.post("/api/containers/{container_id}/delete")
+async def delete_container(container_id: str, force: bool = Query(False, description="是否强制删除运行中的容器")):
+    """删除容器"""
+    try:
+        success = docker_service.delete_container(container_id, force=force)
+        return {
+            "success": success,
+            "message": "容器删除成功"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("delete_container", e, container_id=container_id, force=force)
+        raise
+
+
+@app.get("/api/containers/{container_id}/full-info")
+async def get_container_full_info(container_id: str):
+    """获取容器完整配置信息"""
+    try:
+        info = docker_service.get_container_full_info(container_id)
+        return {
+            "success": True,
+            "data": info
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_container_full_info", e, container_id=container_id)
+        raise
+
+
+@app.get("/api/images/{image_name_or_id}/layers")
+async def get_image_layers(image_name_or_id: str):
+    """获取镜像层信息"""
+    try:
+        layers = docker_service.get_image_layers(image_name_or_id)
+        return {
+            "success": True,
+            "data": layers
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_image_layers", e, image_name=image_name_or_id)
+        raise
+
+
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats(
     all_containers: bool = Query(False, description="是否包含已停止的容器")
