@@ -539,18 +539,35 @@ class DockerService:
         """解析单条日志行
         
         将 Docker 日志流返回的原始字节解析为结构化日志对象
+        Docker 日志流格式：8字节头部 + 日志内容
+        - 第1字节：流类型（0=stdin，1=stdout，2=stderr）
+        - 第2-4字节：保留为0
+        - 第5-8字节：日志内容长度（大端序）
         """
         try:
-            line_str = line.decode('utf-8').strip()
+            if len(line) < 8:
+                return None
+            
+            stream_type_byte = line[0]
+            if stream_type_byte == 1:
+                stream_type = 'stdout'
+            elif stream_type_byte == 2:
+                stream_type = 'stderr'
+            else:
+                stream_type = 'stdout'
+            
+            content_length = int.from_bytes(line[4:8], byteorder='big')
+            
+            if len(line) < 8 + content_length:
+                content = line[8:]
+            else:
+                content = line[8:8+content_length]
+            
+            line_str = content.decode('utf-8').strip()
             if not line_str:
                 return None
             
-            if len(line_str) <= 8:
-                return None
-            
-            content = line_str[0:]
-            
-            parts = content.split(' ', 1)
+            parts = line_str.split(' ', 1)
             
             if len(parts) < 2:
                 return None
@@ -563,9 +580,6 @@ class DockerService:
             except:
                 app_logger.debug(f"时间戳解析异常: {timestamp_str}")
                 return None
-            
-            header = line_str[:8]
-            stream_type = 'stderr' if ord(header[0]) == 1 else 'stdout'
             
             return {
                 'timestamp': int(timestamp),
