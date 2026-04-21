@@ -996,6 +996,148 @@ class DockerService:
             if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
                 raise
             raise ContainerOperationError(f"删除容器失败: {str(e)}")
+
+    def start_containers_batch(self, container_ids: List[str]) -> Dict[str, Any]:
+        """批量启动容器
+
+        返回：
+        - success: 总体是否成功
+        - started: 成功启动的容器 ID 列表
+        - failed: 失败的容器列表，包含 container_id 和 error
+        - total: 处理的总数量
+        """
+        if not self.docker_available:
+            app_logger.warning("Docker is not available in demo mode")
+            raise DockerServiceError("Docker 服务不可用")
+
+        started = []
+        failed = []
+
+        for container_id in container_ids:
+            try:
+                container = self.client.containers.get(container_id)
+                container.start()
+                started.append(container_id)
+                app_logger.info(f"[Batch Start] 容器 {container_id} 启动成功")
+            except docker.errors.NotFound:
+                failed.append({
+                    'container_id': container_id,
+                    'error': f"容器不存在: {container_id}"
+                })
+                log_service_error("start_containers_batch",
+                                  ContainerNotFoundError(f"容器不存在: {container_id}"),
+                                  container_id=container_id)
+            except Exception as e:
+                failed.append({
+                    'container_id': container_id,
+                    'error': str(e)
+                })
+                log_service_error("start_containers_batch", e, container_id=container_id)
+
+        return {
+            'success': len(failed) == 0,
+            'started': started,
+            'failed': failed,
+            'total': len(container_ids),
+            'started_count': len(started),
+            'failed_count': len(failed)
+        }
+
+    def stop_containers_batch(self, container_ids: List[str]) -> Dict[str, Any]:
+        """批量停止容器
+
+        返回：
+        - success: 总体是否成功
+        - stopped: 成功停止的容器 ID 列表
+        - failed: 失败的容器列表，包含 container_id 和 error
+        - total: 处理的总数量
+        """
+        if not self.docker_available:
+            app_logger.warning("Docker is not available in demo mode")
+            raise DockerServiceError("Docker 服务不可用")
+
+        stopped = []
+        failed = []
+
+        for container_id in container_ids:
+            try:
+                container = self.client.containers.get(container_id)
+                container.stop()
+                stopped.append(container_id)
+                app_logger.info(f"[Batch Stop] 容器 {container_id} 停止成功")
+            except docker.errors.NotFound:
+                failed.append({
+                    'container_id': container_id,
+                    'error': f"容器不存在: {container_id}"
+                })
+                log_service_error("stop_containers_batch",
+                                  ContainerNotFoundError(f"容器不存在: {container_id}"),
+                                  container_id=container_id)
+            except Exception as e:
+                failed.append({
+                    'container_id': container_id,
+                    'error': str(e)
+                })
+                log_service_error("stop_containers_batch", e, container_id=container_id)
+
+        return {
+            'success': len(failed) == 0,
+            'stopped': stopped,
+            'failed': failed,
+            'total': len(container_ids),
+            'stopped_count': len(stopped),
+            'failed_count': len(failed)
+        }
+
+    def delete_containers_batch(self, container_ids: List[str], force: bool = False) -> Dict[str, Any]:
+        """批量删除容器
+
+        参数：
+        - container_ids: 容器 ID 列表
+        - force: 是否强制删除运行中的容器
+
+        返回：
+        - success: 总体是否成功
+        - deleted: 成功删除的容器 ID 列表
+        - failed: 失败的容器列表，包含 container_id 和 error
+        - total: 处理的总数量
+        """
+        if not self.docker_available:
+            app_logger.warning("Docker is not available in demo mode")
+            raise DockerServiceError("Docker 服务不可用")
+
+        deleted = []
+        failed = []
+
+        for container_id in container_ids:
+            try:
+                container = self.client.containers.get(container_id)
+                container.remove(force=force)
+                deleted.append(container_id)
+                app_logger.info(f"[Batch Delete] 容器 {container_id} 删除成功")
+            except docker.errors.NotFound:
+                failed.append({
+                    'container_id': container_id,
+                    'error': f"容器不存在: {container_id}"
+                })
+                log_service_error("delete_containers_batch",
+                                  ContainerNotFoundError(f"容器不存在: {container_id}"),
+                                  container_id=container_id)
+            except Exception as e:
+                failed.append({
+                    'container_id': container_id,
+                    'error': str(e)
+                })
+                log_service_error("delete_containers_batch", e, container_id=container_id, force=force)
+
+        return {
+            'success': len(failed) == 0,
+            'deleted': deleted,
+            'failed': failed,
+            'total': len(container_ids),
+            'deleted_count': len(deleted),
+            'failed_count': len(failed)
+        }
     
     def get_container_full_info(self, container_id: str) -> Dict[str, Any]:
         """获取容器完整配置信息"""

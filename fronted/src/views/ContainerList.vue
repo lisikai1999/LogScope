@@ -64,11 +64,58 @@
             <div v-for="i in 5" :key="i" class="skeleton"></div>
           </div>
 
+          <!-- Batch Actions Bar -->
+          <div v-if="selectedContainerIds.length > 0" class="batch-actions-bar">
+            <div class="batch-actions-info">
+              <span>已选择 <strong>{{ selectedContainerIds.length }}</strong> 个容器</span>
+            </div>
+            <div class="batch-actions-buttons">
+              <button
+                class="btn btn-success btn-sm"
+                @click="confirmBatchStart"
+                :disabled="batchOperationInProgress"
+              >
+                批量启动
+              </button>
+              <button
+                class="btn btn-warning btn-sm"
+                @click="confirmBatchStop"
+                :disabled="batchOperationInProgress"
+              >
+                批量停止
+              </button>
+              <button
+                class="btn btn-danger btn-sm"
+                @click="confirmBatchDelete"
+                :disabled="batchOperationInProgress"
+              >
+                批量删除
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                @click="clearSelection"
+                :disabled="batchOperationInProgress"
+              >
+                取消选择
+              </button>
+            </div>
+          </div>
+
           <!-- Container Table -->
           <div v-else class="table-container">
             <table class="table">
               <thead>
                 <tr>
+                  <th style="width: 40px;">
+                    <label class="checkbox-label">
+                      <input
+                        type="checkbox"
+                        :checked="isAllSelected"
+                        :indeterminate="isIndeterminate"
+                        @change="toggleSelectAll"
+                      />
+                    </label>
+                  </th>
                   <th>状态</th>
                   <th>名称</th>
                   <th>镜像</th>
@@ -80,15 +127,27 @@
               </thead>
               <tbody>
                 <tr v-if="total === 0">
-                  <td colspan="7" class="empty-state">
+                  <td colspan="8" class="empty-state">
                     {{ searchQuery ? '没有找到匹配的容器' : '暂无容器' }}
                   </td>
                 </tr>
                 <tr 
                   v-for="(container, index) in containers" 
                   :key="container.id"
-                  :class="{ 'row-selected': selectedIndex === index }"
+                  :class="{ 
+                    'row-selected': selectedIndex === index,
+                    'row-checkbox-selected': isContainerSelected(container.id)
+                  }"
                 >
+                  <td>
+                    <label class="checkbox-label">
+                      <input
+                        type="checkbox"
+                        :checked="isContainerSelected(container.id)"
+                        @change="toggleContainerSelection(container.id)"
+                      />
+                    </label>
+                  </td>
                   <td>
                     <div
                       class="status-dot"
@@ -629,6 +688,104 @@
       </div>
     </div>
 
+    <!-- Batch Operation Confirm Modal -->
+    <div v-if="showBatchConfirmModal" class="modal-overlay" @click.self="closeBatchConfirmModal">
+      <div class="modal modal-small">
+        <div class="modal-header">
+          <h3 class="modal-title">
+            {{ batchOperationType === 'start' ? '确认批量启动' : 
+               batchOperationType === 'stop' ? '确认批量停止' : '确认批量删除' }}
+          </h3>
+        </div>
+        <div class="modal-body">
+          <p class="delete-warning">
+            确定要{{ batchOperationType === 'start' ? '启动' : 
+                       batchOperationType === 'stop' ? '停止' : '删除' }} 
+            <strong>{{ selectedContainerIds.length }}</strong> 个容器吗？
+          </p>
+          <p class="delete-info">
+            此操作将影响以下容器：
+          </p>
+          <div class="selected-containers-list">
+            <div 
+              v-for="container in selectedContainersForBatch" 
+              :key="container.id"
+              class="selected-container-item"
+            >
+              <span class="container-name">{{ getContainerName(container.names) }}</span>
+              <span class="container-status">
+                <span
+                  class="badge"
+                  :class="container.state === 'running' ? 'badge-success' : 'badge-secondary'"
+                >
+                  {{ container.status }}
+                </span>
+              </span>
+            </div>
+          </div>
+          <div v-if="batchOperationType === 'delete' && hasRunningContainersInSelection" class="checkbox-label mt-2">
+            <input type="checkbox" v-model="batchForceDelete" id="batchForceDelete" />
+            <label for="batchForceDelete">强制删除（终止并删除运行中的容器）</label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="closeBatchConfirmModal">取消</button>
+          <button 
+            :class="['btn', batchOperationType === 'delete' ? 'btn-danger' : batchOperationType === 'stop' ? 'btn-warning' : 'btn-success']"
+            @click="executeBatchOperation"
+          >
+            {{ batchOperationInProgress ? '处理中...' : 
+               batchOperationType === 'start' ? '确认启动' : 
+               batchOperationType === 'stop' ? '确认停止' : '确认删除' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch Result Modal -->
+    <div v-if="showBatchResultModal" class="modal-overlay" @click.self="closeBatchResultModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3 class="modal-title">批量操作结果</h3>
+          <button class="modal-close" @click="closeBatchResultModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body modal-scrollable">
+          <div class="batch-result-summary">
+            <div class="result-item success">
+              <span class="result-label">成功</span>
+              <span class="result-count">{{ batchResult?.data?.started_count || batchResult?.data?.stopped_count || batchResult?.data?.deleted_count || 0 }}</span>
+            </div>
+            <div class="result-item failed" v-if="batchResult?.data?.failed_count > 0">
+              <span class="result-label">失败</span>
+              <span class="result-count">{{ batchResult?.data?.failed_count || 0 }}</span>
+            </div>
+          </div>
+          
+          <div v-if="batchResult?.data?.failed && batchResult.data.failed.length > 0" class="failed-list-section">
+            <h4 class="section-title">失败详情</h4>
+            <div class="failed-list">
+              <div 
+                v-for="(failed, idx) in batchResult.data.failed" 
+                :key="idx"
+                class="failed-item"
+              >
+                <div class="failed-container-id font-mono">{{ failed.container_id?.slice(0, 12) || '未知容器' }}</div>
+                <div class="failed-error">{{ failed.error }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" @click="closeBatchResultModal">确定</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Toast Notification -->
     <div v-if="toastMessage" class="toast" :class="toastType">
       {{ toastMessage }}
@@ -637,7 +794,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, nextTick, onUnmounted } from 'vue'
+import { ref, computed, onMounted, watch, nextTick, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
@@ -675,6 +832,131 @@ const forceDelete = ref(false)
 const toastMessage = ref('')
 const toastType = ref('success')
 let toastTimeout = null
+
+const selectedContainerIds = ref([])
+const batchOperationInProgress = ref(false)
+const showBatchConfirmModal = ref(false)
+const batchOperationType = ref('')
+const batchForceDelete = ref(false)
+const showBatchResultModal = ref(false)
+const batchResult = ref(null)
+
+const isAllSelected = computed(() => {
+  if (containers.value.length === 0) return false
+  return containers.value.every(container => selectedContainerIds.value.includes(container.id))
+})
+
+const isIndeterminate = computed(() => {
+  if (containers.value.length === 0) return false
+  const selectedCount = containers.value.filter(container => selectedContainerIds.value.includes(container.id)).length
+  return selectedCount > 0 && selectedCount < containers.value.length
+})
+
+const selectedContainersForBatch = computed(() => {
+  return containers.value.filter(container => selectedContainerIds.value.includes(container.id))
+})
+
+const hasRunningContainersInSelection = computed(() => {
+  return selectedContainersForBatch.value.some(container => container.state === 'running')
+})
+
+const isContainerSelected = (containerId) => {
+  return selectedContainerIds.value.includes(containerId)
+}
+
+const toggleContainerSelection = (containerId) => {
+  const index = selectedContainerIds.value.indexOf(containerId)
+  if (index === -1) {
+    selectedContainerIds.value.push(containerId)
+  } else {
+    selectedContainerIds.value.splice(index, 1)
+  }
+}
+
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    selectedContainerIds.value = []
+  } else {
+    selectedContainerIds.value = containers.value.map(container => container.id)
+  }
+}
+
+const clearSelection = () => {
+  selectedContainerIds.value = []
+}
+
+const confirmBatchStart = () => {
+  batchOperationType.value = 'start'
+  batchForceDelete.value = false
+  showBatchConfirmModal.value = true
+}
+
+const confirmBatchStop = () => {
+  batchOperationType.value = 'stop'
+  batchForceDelete.value = false
+  showBatchConfirmModal.value = true
+}
+
+const confirmBatchDelete = () => {
+  batchOperationType.value = 'delete'
+  batchForceDelete.value = hasRunningContainersInSelection.value
+  showBatchConfirmModal.value = true
+}
+
+const closeBatchConfirmModal = () => {
+  showBatchConfirmModal.value = false
+  batchOperationType.value = ''
+  batchForceDelete.value = false
+}
+
+const closeBatchResultModal = () => {
+  showBatchResultModal.value = false
+  batchResult.value = null
+  clearSelection()
+}
+
+const executeBatchOperation = async () => {
+  try {
+    batchOperationInProgress.value = true
+    
+    let endpoint = ''
+    let params = {}
+    
+    if (batchOperationType.value === 'start') {
+      endpoint = '/api/containers/batch/start'
+    } else if (batchOperationType.value === 'stop') {
+      endpoint = '/api/containers/batch/stop'
+    } else if (batchOperationType.value === 'delete') {
+      endpoint = '/api/containers/batch/delete'
+      if (batchForceDelete.value) {
+        params.force = true
+      }
+    }
+    
+    const response = await axios.post(endpoint, selectedContainerIds.value, { params })
+    
+    closeBatchConfirmModal()
+    batchResult.value = response.data
+    
+    if (response.data.success) {
+      showToast(response.data.message, 'success')
+    } else {
+      showToast(response.data.message, 'error')
+    }
+    
+    if (response.data.data?.failed_count > 0) {
+      showBatchResultModal.value = true
+    } else {
+      clearSelection()
+    }
+    
+    fetchContainers()
+  } catch (err) {
+    showToast(err.message || '批量操作失败', 'error')
+  } finally {
+    batchOperationInProgress.value = false
+  }
+}
 
 const showToast = (message, type = 'success') => {
   if (toastTimeout) {
@@ -1810,6 +2092,168 @@ onUnmounted(() => {
   color: white;
 }
 
+.batch-actions-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background-color: var(--primary-color);
+  border-radius: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.batch-actions-info {
+  color: white;
+  font-weight: 500;
+}
+
+.batch-actions-info strong {
+  font-size: 1.1rem;
+}
+
+.batch-actions-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.batch-actions-buttons .btn {
+  background-color: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.batch-actions-buttons .btn:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
+.batch-actions-buttons .btn:disabled {
+  opacity: 0.5;
+}
+
+.batch-actions-buttons .btn.btn-success:hover:not(:disabled) {
+  background-color: var(--success-color);
+  border-color: var(--success-color);
+}
+
+.batch-actions-buttons .btn.btn-warning:hover:not(:disabled) {
+  background-color: var(--warning-color);
+  border-color: var(--warning-color);
+}
+
+.batch-actions-buttons .btn.btn-danger:hover:not(:disabled) {
+  background-color: var(--error-color);
+  border-color: var(--error-color);
+}
+
+.row-checkbox-selected {
+  background-color: rgba(59, 130, 246, 0.05);
+}
+
+.selected-containers-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  margin-top: 0.5rem;
+  background-color: var(--bg-secondary);
+}
+
+.selected-container-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.selected-container-item:last-child {
+  border-bottom: none;
+}
+
+.container-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.container-status {
+  margin-left: 0.5rem;
+}
+
+.batch-result-summary {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 1.5rem;
+}
+
+.result-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1rem 2rem;
+  border-radius: 0.5rem;
+  background-color: var(--bg-secondary);
+}
+
+.result-item.success {
+  border-left: 4px solid var(--success-color);
+}
+
+.result-item.failed {
+  border-left: 4px solid var(--error-color);
+}
+
+.result-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.result-count {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.result-item.success .result-count {
+  color: var(--success-color);
+}
+
+.result-item.failed .result-count {
+  color: var(--error-color);
+}
+
+.failed-list-section {
+  margin-top: 1rem;
+}
+
+.failed-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.failed-item {
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  margin-bottom: 0.5rem;
+  background-color: #fef2f2;
+  border-left: 3px solid var(--error-color);
+}
+
+.failed-container-id {
+  font-weight: 600;
+  color: var(--error-color);
+  margin-bottom: 0.25rem;
+}
+
+.failed-error {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
 @media (max-width: 768px) {
   .header-content {
     flex-direction: column;
@@ -1849,6 +2293,26 @@ onUnmounted(() => {
 
   .action-buttons {
     flex-wrap: wrap;
+  }
+
+  .batch-actions-bar {
+    flex-direction: column;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+
+  .batch-actions-buttons {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .batch-result-summary {
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .result-item {
+    width: 100%;
   }
 }
 </style>
