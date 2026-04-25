@@ -155,7 +155,7 @@ async def login(
     await db.commit()
     
     access_token = create_access_token(
-        data={"sub": user.id, "username": user.username, "role": user.role}
+        data={"sub": str(user.id), "username": user.username, "role": user.role}
     )
     
     return Token(access_token=access_token, token_type="bearer")
@@ -1112,10 +1112,17 @@ async def websocket_log_stream(
         app_logger.warning(f"[WebSocket] Token 无效，拒绝连接: container_id={container_id}")
         return
     
-    user_id = payload.get("sub")
-    if user_id is None:
+    user_id_str = payload.get("sub")
+    if user_id_str is None:
         await websocket.close(code=1008)
         app_logger.warning(f"[WebSocket] Token 中无 user_id，拒绝连接: container_id={container_id}")
+        return
+    
+    try:
+        user_id = int(user_id_str)
+    except (ValueError, TypeError):
+        await websocket.close(code=1008)
+        app_logger.warning(f"[WebSocket] Token 中 user_id 格式无效: container_id={container_id}")
         return
     
     async with async_session_maker() as db:
