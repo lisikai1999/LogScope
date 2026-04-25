@@ -213,7 +213,7 @@ async def change_password(
     return {"success": True, "message": "密码修改成功"}
 
 
-@app.get("/api/users", response_model=List[UserResponse])
+@app.get("/api/users")
 async def list_users(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
@@ -228,7 +228,7 @@ async def list_users(
     )
     users = result.scalars().all()
     
-    return [
+    user_list = [
         UserResponse(
             id=user.id,
             username=user.username,
@@ -240,9 +240,14 @@ async def list_users(
         )
         for user in users
     ]
+    
+    return {
+        "success": True,
+        "data": user_list
+    }
 
 
-@app.get("/api/users/{user_id}", response_model=UserWithPermissionsResponse)
+@app.get("/api/users/{user_id}")
 async def get_user(
     user_id: int,
     current_admin: User = Depends(get_current_admin_user),
@@ -257,7 +262,7 @@ async def get_user(
     if not user:
         raise UserNotFoundError(f"用户不存在: {user_id}")
     
-    return UserWithPermissionsResponse(
+    user_data = UserWithPermissionsResponse(
         id=user.id,
         username=user.username,
         role=user.role,
@@ -277,9 +282,14 @@ async def get_user(
             for p in user.permissions
         ]
     )
+    
+    return {
+        "success": True,
+        "data": user_data
+    }
 
 
-@app.post("/api/users", response_model=UserResponse)
+@app.post("/api/users")
 async def create_user(
     user_data: UserCreate,
     current_admin: User = Depends(get_current_admin_user),
@@ -302,7 +312,7 @@ async def create_user(
     await db.commit()
     await db.refresh(new_user)
     
-    return UserResponse(
+    user_response = UserResponse(
         id=new_user.id,
         username=new_user.username,
         role=new_user.role,
@@ -311,9 +321,14 @@ async def create_user(
         updated_at=new_user.updated_at,
         last_login_at=new_user.last_login_at
     )
+    
+    return {
+        "success": True,
+        "data": user_response
+    }
 
 
-@app.put("/api/users/{user_id}", response_model=UserResponse)
+@app.put("/api/users/{user_id}")
 async def update_user(
     user_id: int,
     user_data: UserUpdate,
@@ -335,7 +350,7 @@ async def update_user(
     await db.commit()
     await db.refresh(user)
     
-    return UserResponse(
+    user_response = UserResponse(
         id=user.id,
         username=user.username,
         role=user.role,
@@ -344,6 +359,11 @@ async def update_user(
         updated_at=user.updated_at,
         last_login_at=user.last_login_at
     )
+    
+    return {
+        "success": True,
+        "data": user_response
+    }
 
 
 @app.delete("/api/users/{user_id}")
@@ -366,7 +386,7 @@ async def delete_user(
     return {"success": True, "message": "用户删除成功"}
 
 
-@app.get("/api/users/{user_id}/permissions", response_model=UserPermissionsResponse)
+@app.get("/api/users/{user_id}/permissions")
 async def get_user_permissions(
     user_id: int,
     current_admin: User = Depends(get_current_admin_user),
@@ -402,14 +422,19 @@ async def get_user_permissions(
             )
         )
     
-    return UserPermissionsResponse(
+    permissions_response = UserPermissionsResponse(
         user_id=user_id,
         username=user.username,
         permissions=permission_infos
     )
+    
+    return {
+        "success": True,
+        "data": permissions_response
+    }
 
 
-@app.post("/api/users/{user_id}/permissions", response_model=ContainerPermissionResponse)
+@app.post("/api/users/{user_id}/permissions")
 async def add_user_permission(
     user_id: int,
     permission_data: ContainerPermissionCreate,
@@ -442,7 +467,7 @@ async def add_user_permission(
     await db.commit()
     await db.refresh(new_permission)
     
-    return ContainerPermissionResponse(
+    permission_response = ContainerPermissionResponse(
         id=new_permission.id,
         user_id=new_permission.user_id,
         container_id=new_permission.container_id,
@@ -450,6 +475,11 @@ async def add_user_permission(
         created_at=new_permission.created_at,
         updated_at=new_permission.updated_at
     )
+    
+    return {
+        "success": True,
+        "data": permission_response
+    }
 
 
 @app.put("/api/users/{user_id}/permissions/{container_id}")
