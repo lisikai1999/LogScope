@@ -20,9 +20,32 @@
             <router-link to="/multi-logs" class="btn btn-primary">
               多容器日志聚合
             </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/users" 
+              class="btn btn-outline"
+            >
+              用户管理
+            </router-link>
             <button class="btn btn-outline" @click="fetchContainers">
               刷新
             </button>
+            <div class="user-menu">
+              <span class="user-info">
+                <span class="user-avatar">{{ currentUser?.username?.charAt(0).toUpperCase() }}</span>
+                <span class="user-name">{{ currentUser?.username }}</span>
+                <span class="user-role" :class="isAdmin ? 'role-admin' : 'role-user'">
+                  {{ isAdmin ? '管理员' : '用户' }}
+                </span>
+              </span>
+              <button class="btn btn-ghost btn-sm" @click="logout" title="退出登录">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                  <polyline points="16 17 21 12 16 7"></polyline>
+                  <line x1="21" y1="12" x2="9" y2="12"></line>
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -73,23 +96,29 @@
               <button
                 class="btn btn-success btn-sm"
                 @click="confirmBatchStart"
-                :disabled="batchOperationInProgress"
+                :disabled="batchOperationInProgress || !isAdmin"
+                :title="isAdmin ? '批量启动' : '只有管理员可以执行批量操作'"
               >
                 批量启动
+                <span v-if="!isAdmin" class="btn-disabled-text">（管理员专属）</span>
               </button>
               <button
                 class="btn btn-warning btn-sm"
                 @click="confirmBatchStop"
-                :disabled="batchOperationInProgress"
+                :disabled="batchOperationInProgress || !isAdmin"
+                :title="isAdmin ? '批量停止' : '只有管理员可以执行批量操作'"
               >
                 批量停止
+                <span v-if="!isAdmin" class="btn-disabled-text">（管理员专属）</span>
               </button>
               <button
                 class="btn btn-danger btn-sm"
                 @click="confirmBatchDelete"
-                :disabled="batchOperationInProgress"
+                :disabled="batchOperationInProgress || !isAdmin"
+                :title="isAdmin ? '批量删除' : '只有管理员可以执行批量操作'"
               >
                 批量删除
+                <span v-if="!isAdmin" class="btn-disabled-text">（管理员专属）</span>
               </button>
               <button
                 class="btn btn-ghost btn-sm"
@@ -174,8 +203,9 @@
                         v-if="container.state !== 'running'"
                         class="btn btn-success btn-sm action-btn"
                         @click="startContainer(container)"
-                        :disabled="operationInProgress === container.id"
-                        title="启动容器"
+                        :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
+                        :title="canWriteContainer(container.id) ? '启动容器' : '无操作权限'"
+                        :class="{ 'btn-disabled': !canWriteContainer(container.id) }"
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <polygon points="5 3 19 12 5 21 5 3"></polygon>
@@ -185,8 +215,9 @@
                         v-if="container.state === 'running'"
                         class="btn btn-warning btn-sm action-btn"
                         @click="stopContainer(container)"
-                        :disabled="operationInProgress === container.id"
-                        title="停止容器"
+                        :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
+                        :title="canWriteContainer(container.id) ? '停止容器' : '无操作权限'"
+                        :class="{ 'btn-disabled': !canWriteContainer(container.id) }"
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                           <rect x="6" y="4" width="4" height="16"></rect>
@@ -222,14 +253,16 @@
                         <div class="dropdown-menu" v-if="openDropdown === container.id">
                           <button 
                             class="dropdown-item"
-                            @click="restartContainer(container)"
-                            :disabled="operationInProgress === container.id"
+                            :class="{ 'dropdown-disabled': !canWriteContainer(container.id) }"
+                            @click="canWriteContainer(container.id) ? restartContainer(container) : null"
+                            :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
                           >
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
                               <polyline points="23 4 23 10 17 10"></polyline>
                               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
                             </svg>
                             重启容器
+                            <span v-if="!canWriteContainer(container.id)" class="dropdown-disabled-text">（无权限）</span>
                           </button>
                           <button 
                             class="dropdown-item"
@@ -256,8 +289,9 @@
                           <div class="dropdown-divider"></div>
                           <button 
                             class="dropdown-item dropdown-danger"
-                            @click="confirmDeleteContainer(container)"
-                            :disabled="operationInProgress === container.id"
+                            :class="{ 'dropdown-disabled': !canWriteContainer(container.id) }"
+                            @click="canWriteContainer(container.id) ? confirmDeleteContainer(container) : null"
+                            :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
                           >
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
                               <polyline points="3 6 5 6 21 6"></polyline>
@@ -266,6 +300,7 @@
                               <line x1="14" y1="11" x2="14" y2="17"></line>
                             </svg>
                             删除容器
+                            <span v-if="!canWriteContainer(container.id)" class="dropdown-disabled-text">（无权限）</span>
                           </button>
                         </div>
                       </div>
@@ -798,9 +833,12 @@ import { ref, computed, onMounted, watch, nextTick, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
+import { useAuth } from '../composables/useAuth'
 
 const router = useRouter()
 const { register } = useKeyboardShortcuts('container-list')
+
+const { isAdmin, currentUser, logout, canWriteContainer } = useAuth()
 
 const containers = ref([])
 const loading = ref(true)
@@ -2314,5 +2352,95 @@ onUnmounted(() => {
   .result-item {
     width: 100%;
   }
+  
+  .user-menu {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .user-info {
+    justify-content: flex-start;
+  }
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background-color: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.user-name {
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.user-role {
+  font-size: 0.7rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+}
+
+.user-role.role-admin {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+
+.user-role.role-user {
+  background-color: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+}
+
+.btn-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-disabled:hover {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-disabled-text {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  margin-left: 0.25rem;
+}
+
+.dropdown-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dropdown-disabled:hover {
+  background-color: transparent;
+  cursor: not-allowed;
+}
+
+.dropdown-disabled-text {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  margin-left: 0.5rem;
 }
 </style>

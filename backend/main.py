@@ -4,23 +4,66 @@ import json
 import traceback
 import asyncio
 import time
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, Body
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, Body, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from typing import Optional, List, Dict, Any
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, or_
+from sqlalchemy.orm import selectinload
+
 from docker_service import docker_service
 from logger import app_logger
+from config import settings
+from database import get_db, async_session_maker, init_db
+from models import User, UserContainerPermission, UserRole, ContainerPermission
+from schemas import (
+    UserLogin, Token, UserCreate, UserUpdate, UserResponse, 
+    ContainerPermissionCreate, ContainerPermissionUpdate, 
+    ContainerPermissionResponse, UserWithPermissionsResponse,
+    PasswordChange, PermissionCheckResponse, UserPermissionsResponse,
+    ContainerPermissionInfo
+)
+from auth_service import (
+    get_password_hash, verify_password, create_access_token,
+    decode_access_token, get_user_by_username, get_user_by_id,
+    authenticate_user, create_default_admin, get_current_user,
+    get_current_admin_user, check_container_permission,
+    get_user_allowed_containers
+)
 from exceptions import (
     AppException,
     ContainerNotFoundError,
     ContainerOperationError,
-    LogFetchError
+    LogFetchError,
+    AuthenticationError,
+    AuthorizationError,
+    UserNotFoundError,
+    UserAlreadyExistsError,
+    InvalidCredentialsError,
+    PermissionNotFoundError,
+    PermissionAlreadyExistsError
 )
 
-app = FastAPI(title="Docker 日志查看器 API", version="1.0.0")
 
-# 配置 CORS
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    async with async_session_maker() as session:
+        await create_default_admin(session)
+    yield
+
+
+app = FastAPI(
+    title="LogScope API",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -89,7 +132,396 @@ def log_error(endpoint: str, error: Exception, **kwargs):
 
 @app.get("/")
 async def root():
-    return {"message": "Docker 日志查看器 API"}
+    return {"message": "LogScope API"}
+
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "version": "1.0.0"}
+
+
+@app.post("/api/auth/login", response_model=Token)
+async def login(
+    login_data: UserLogin,
+    db: AsyncSession = Depends(get_db)
+):
+    """用户登录"""
+    user = await authenticate_user(db, login_data.username, login_data.password)
+    
+    if not user:
+        raise InvalidCredentialsError("用户名或密码错误")
+    
+    user.last_login_at = datetime.utcnow()
+    await db.commit()
+    
+    access_token = create_access_token(
+        data={"sub": user.id, "username": user.username, "role": user.role}
+    )
+    
+    return Token(access_token=access_token, token_type="bearer")
+
+
+@app.get("/api/auth/me", response_model=UserWithPermissionsResponse)
+async def get_current_user_info(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取当前用户信息和权限"""
+    result = await db.execute(
+        select(User).options(selectinload(User.permissions)).where(User.id == current_user.id)
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise UserNotFoundError("用户不存在")
+    
+    return UserWithPermissionsResponse(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+        last_login_at=user.last_login_at,
+        permissions=[
+            ContainerPermissionResponse(
+                id=p.id,
+                user_id=p.user_id,
+                container_id=p.container_id,
+                permission_level=p.permission_level,
+                created_at=p.created_at,
+                updated_at=p.updated_at
+            )
+            for p in user.permissions
+        ]
+    )
+
+
+@app.post("/api/auth/change-password")
+async def change_password(
+    password_data: PasswordChange,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """修改当前用户密码"""
+    if not verify_password(password_data.old_password, current_user.password_hash):
+        raise InvalidCredentialsError("原密码错误")
+    
+    current_user.password_hash = get_password_hash(password_data.new_password)
+    await db.commit()
+    
+    return {"success": True, "message": "密码修改成功"}
+
+
+@app.get("/api/users", response_model=List[UserResponse])
+async def list_users(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取用户列表（管理员）"""
+    offset = (page - 1) * page_size
+    
+    result = await db.execute(
+        select(User).order_by(User.id).offset(offset).limit(page_size)
+    )
+    users = result.scalars().all()
+    
+    return [
+        UserResponse(
+            id=user.id,
+            username=user.username,
+            role=user.role,
+            is_active=user.is_active,
+            created_at=user.created_at,
+            updated_at=user.updated_at,
+            last_login_at=user.last_login_at
+        )
+        for user in users
+    ]
+
+
+@app.get("/api/users/{user_id}", response_model=UserWithPermissionsResponse)
+async def get_user(
+    user_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取指定用户信息（管理员）"""
+    result = await db.execute(
+        select(User).options(selectinload(User.permissions)).where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    return UserWithPermissionsResponse(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+        last_login_at=user.last_login_at,
+        permissions=[
+            ContainerPermissionResponse(
+                id=p.id,
+                user_id=p.user_id,
+                container_id=p.container_id,
+                permission_level=p.permission_level,
+                created_at=p.created_at,
+                updated_at=p.updated_at
+            )
+            for p in user.permissions
+        ]
+    )
+
+
+@app.post("/api/users", response_model=UserResponse)
+async def create_user(
+    user_data: UserCreate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """创建新用户（管理员）"""
+    existing_user = await get_user_by_username(db, user_data.username)
+    if existing_user:
+        raise UserAlreadyExistsError(f"用户名已存在: {user_data.username}")
+    
+    hashed_password = get_password_hash(user_data.password)
+    new_user = User(
+        username=user_data.username,
+        password_hash=hashed_password,
+        role=user_data.role.value,
+        is_active=user_data.is_active
+    )
+    
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+    
+    return UserResponse(
+        id=new_user.id,
+        username=new_user.username,
+        role=new_user.role,
+        is_active=new_user.is_active,
+        created_at=new_user.created_at,
+        updated_at=new_user.updated_at,
+        last_login_at=new_user.last_login_at
+    )
+
+
+@app.put("/api/users/{user_id}", response_model=UserResponse)
+async def update_user(
+    user_id: int,
+    user_data: UserUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """更新用户信息（管理员）"""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    if user_data.password:
+        user.password_hash = get_password_hash(user_data.password)
+    if user_data.role:
+        user.role = user_data.role.value
+    if user_data.is_active is not None:
+        user.is_active = user_data.is_active
+    
+    await db.commit()
+    await db.refresh(user)
+    
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+        last_login_at=user.last_login_at
+    )
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除用户（管理员）"""
+    if user_id == current_admin.id:
+        raise AuthorizationError("不能删除当前登录的管理员账户")
+    
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    await db.delete(user)
+    await db.commit()
+    
+    return {"success": True, "message": "用户删除成功"}
+
+
+@app.get("/api/users/{user_id}/permissions", response_model=UserPermissionsResponse)
+async def get_user_permissions(
+    user_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取用户的容器权限列表（管理员）"""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    result = await db.execute(
+        select(UserContainerPermission).where(UserContainerPermission.user_id == user_id)
+    )
+    permissions = result.scalars().all()
+    
+    permission_infos = []
+    for p in permissions:
+        container_name = None
+        try:
+            container_info = docker_service.get_container_info(p.container_id)
+            if container_info and container_info.get('names'):
+                container_name = container_info['names'][0].replace('/', '')
+        except:
+            pass
+        
+        permission_infos.append(
+            ContainerPermissionInfo(
+                container_id=p.container_id,
+                container_name=container_name,
+                permission_level=p.permission_level,
+                can_read=p.can_read(),
+                can_write=p.can_write()
+            )
+        )
+    
+    return UserPermissionsResponse(
+        user_id=user_id,
+        username=user.username,
+        permissions=permission_infos
+    )
+
+
+@app.post("/api/users/{user_id}/permissions", response_model=ContainerPermissionResponse)
+async def add_user_permission(
+    user_id: int,
+    permission_data: ContainerPermissionCreate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """为用户添加容器权限（管理员）"""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    existing_permission = await db.execute(
+        select(UserContainerPermission).where(
+            and_(
+                UserContainerPermission.user_id == user_id,
+                UserContainerPermission.container_id == permission_data.container_id
+            )
+        )
+    )
+    if existing_permission.scalar_one_or_none():
+        raise PermissionAlreadyExistsError("该用户对该容器的权限已存在")
+    
+    new_permission = UserContainerPermission(
+        user_id=user_id,
+        container_id=permission_data.container_id,
+        permission_level=permission_data.permission_level.value
+    )
+    
+    db.add(new_permission)
+    await db.commit()
+    await db.refresh(new_permission)
+    
+    return ContainerPermissionResponse(
+        id=new_permission.id,
+        user_id=new_permission.user_id,
+        container_id=new_permission.container_id,
+        permission_level=new_permission.permission_level,
+        created_at=new_permission.created_at,
+        updated_at=new_permission.updated_at
+    )
+
+
+@app.put("/api/users/{user_id}/permissions/{container_id}")
+async def update_user_permission(
+    user_id: int,
+    container_id: str,
+    permission_data: ContainerPermissionUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """更新用户的容器权限（管理员）"""
+    permission = await db.execute(
+        select(UserContainerPermission).where(
+            and_(
+                UserContainerPermission.user_id == user_id,
+                UserContainerPermission.container_id == container_id
+            )
+        )
+    )
+    permission = permission.scalar_one_or_none()
+    
+    if not permission:
+        raise PermissionNotFoundError("权限不存在")
+    
+    if permission_data.permission_level:
+        permission.permission_level = permission_data.permission_level.value
+    
+    await db.commit()
+    
+    return {"success": True, "message": "权限更新成功"}
+
+
+@app.delete("/api/users/{user_id}/permissions/{container_id}")
+async def remove_user_permission(
+    user_id: int,
+    container_id: str,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """移除用户的容器权限（管理员）"""
+    permission = await db.execute(
+        select(UserContainerPermission).where(
+            and_(
+                UserContainerPermission.user_id == user_id,
+                UserContainerPermission.container_id == container_id
+            )
+        )
+    )
+    permission = permission.scalar_one_or_none()
+    
+    if not permission:
+        raise PermissionNotFoundError("权限不存在")
+    
+    await db.delete(permission)
+    await db.commit()
+    
+    return {"success": True, "message": "权限已移除"}
+
+
+async def filter_containers_by_permission(
+    containers: List[Dict[str, Any]],
+    allowed_container_ids: Optional[List[str]]
+) -> List[Dict[str, Any]]:
+    """根据权限过滤容器列表"""
+    if allowed_container_ids is None:
+        return containers
+    
+    allowed_ids_set = set(allowed_container_ids)
+    return [
+        c for c in containers
+        if c['id'] in allowed_ids_set
+    ]
 
 
 @app.get("/api/containers")
@@ -97,25 +529,42 @@ async def list_containers(
     all_containers: bool = Query(False, description="是否显示所有容器（包括已停止的）"),
     page: int = Query(1, ge=1, description="页码，从 1 开始"),
     page_size: int = Query(20, ge=1, le=1000, description="每页数量，1-1000"),
-    search: Optional[str] = Query(None, description="搜索关键词（容器名称、镜像、ID）")
+    search: Optional[str] = Query(None, description="搜索关键词（容器名称、镜像、ID）"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """获取容器列表（支持分页和搜索）"""
+    """获取容器列表（支持分页和搜索，带权限过滤）"""
     try:
         app_logger.debug(f"Received params: all_containers={all_containers}, page={page}, page_size={page_size}, search={search}")
+        
+        allowed_container_ids = await get_user_allowed_containers(db, current_user)
+        
         result = docker_service.list_containers(
             all_containers=all_containers,
-            page=page,
-            page_size=page_size,
+            page=1,
+            page_size=10000,
             search=search
         )
-        app_logger.debug(f"Returning {len(result['data'])} of {result['total']} containers")
+        
+        filtered_containers = await filter_containers_by_permission(
+            result['data'],
+            allowed_container_ids
+        )
+        
+        total = len(filtered_containers)
+        total_pages = (total + page_size - 1) // page_size
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        page_data = filtered_containers[start_index:end_index]
+        
+        app_logger.debug(f"Returning {len(page_data)} of {total} containers")
         return {
             "success": True,
-            "data": result['data'],
-            "total": result['total'],
-            "page": result['page'],
-            "page_size": result['page_size'],
-            "total_pages": result['total_pages']
+            "data": page_data,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": total_pages
         }
     except AppException:
         raise
@@ -140,15 +589,14 @@ async def get_container_logs(
     start_from_head: bool = Query(False, description="是否从时间范围开头（最老的日志）开始加载"),
     next_token: Optional[str] = Query(None, description="分页令牌，用于加载下一页"),
     direction: Optional[str] = Query(None, description="分页方向：forward（向后/更新）或 backward（向前/更早）"),
-    search: Optional[str] = Query(None, description="搜索关键词，用于过滤日志消息内容")
+    search: Optional[str] = Query(None, description="搜索关键词，用于过滤日志消息内容"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """获取容器日志（支持时间筛选和分页）
+    """获取容器日志（支持时间筛选和分页，带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=False):
+        raise AuthorizationError("您没有权限查看该容器的日志")
     
-    分页机制说明（参考 AWS CloudWatch）：
-    - 当 start_from_head=True 时，从时间范围的开头（最老的日志）开始加载
-    - 使用 next_token 进行分页，返回的 next_token 用于获取下一页
-    - direction: forward 加载更新的日志，backward 加载更早的日志
-    """
     try:
         app_logger.debug(f"获取日志参数: since={since}, until={until}, tail={tail}, limit={limit}, start_from_head={start_from_head}, next_token={next_token}, direction={direction}, search={search}")
         
@@ -201,13 +649,16 @@ async def get_container_logs(
 
 @app.post("/api/containers/batch/start")
 async def start_containers_batch(
-    container_ids: List[str] = Body(..., description="容器 ID 列表")
+    container_ids: List[str] = Body(..., description="容器 ID 列表"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """批量启动容器
-
-    请求体示例：
-    ["container_id_1", "container_id_2", "container_id_3"]
-    """
+    """批量启动容器（带权限检查）"""
+    if not current_user.is_admin():
+        for container_id in container_ids:
+            if not await check_container_permission(db, current_user, container_id, require_write=True):
+                raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
+    
     try:
         app_logger.debug(f"[Batch Start] 收到批量启动请求: {container_ids}")
         result = docker_service.start_containers_batch(container_ids)
@@ -225,13 +676,16 @@ async def start_containers_batch(
 
 @app.post("/api/containers/batch/stop")
 async def stop_containers_batch(
-    container_ids: List[str] = Body(..., description="容器 ID 列表")
+    container_ids: List[str] = Body(..., description="容器 ID 列表"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """批量停止容器
-
-    请求体示例：
-    ["container_id_1", "container_id_2", "container_id_3"]
-    """
+    """批量停止容器（带权限检查）"""
+    if not current_user.is_admin():
+        for container_id in container_ids:
+            if not await check_container_permission(db, current_user, container_id, require_write=True):
+                raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
+    
     try:
         app_logger.debug(f"[Batch Stop] 收到批量停止请求: {container_ids}")
         result = docker_service.stop_containers_batch(container_ids)
@@ -250,13 +704,16 @@ async def stop_containers_batch(
 @app.post("/api/containers/batch/delete")
 async def delete_containers_batch(
     container_ids: List[str] = Body(..., description="容器 ID 列表"),
-    force: bool = Query(False, description="是否强制删除运行中的容器")
+    force: bool = Query(False, description="是否强制删除运行中的容器"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """批量删除容器
-
-    请求体示例：
-    ["container_id_1", "container_id_2", "container_id_3"]
-    """
+    """批量删除容器（带权限检查）"""
+    if not current_user.is_admin():
+        for container_id in container_ids:
+            if not await check_container_permission(db, current_user, container_id, require_write=True):
+                raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
+    
     try:
         app_logger.debug(f"[Batch Delete] 收到批量删除请求: {container_ids}, force={force}")
         result = docker_service.delete_containers_batch(container_ids, force=force)
@@ -273,8 +730,15 @@ async def delete_containers_batch(
 
 
 @app.get("/api/containers/{container_id}/info")
-async def get_container_info(container_id: str):
-    """获取容器详情"""
+async def get_container_info(
+    container_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取容器详情（带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=False):
+        raise AuthorizationError("您没有权限查看该容器的信息")
+    
     try:
         info = docker_service.get_container_info(container_id)
         return {
@@ -289,8 +753,15 @@ async def get_container_info(container_id: str):
 
 
 @app.post("/api/containers/{container_id}/start")
-async def start_container(container_id: str):
-    """启动容器"""
+async def start_container(
+    container_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """启动容器（带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=True):
+        raise AuthorizationError("您没有权限启动该容器")
+    
     try:
         success = docker_service.start_container(container_id)
         return {
@@ -305,8 +776,15 @@ async def start_container(container_id: str):
 
 
 @app.post("/api/containers/{container_id}/stop")
-async def stop_container(container_id: str):
-    """停止容器"""
+async def stop_container(
+    container_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """停止容器（带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=True):
+        raise AuthorizationError("您没有权限停止该容器")
+    
     try:
         success = docker_service.stop_container(container_id)
         return {
@@ -321,8 +799,15 @@ async def stop_container(container_id: str):
 
 
 @app.post("/api/containers/{container_id}/restart")
-async def restart_container(container_id: str):
-    """重启容器"""
+async def restart_container(
+    container_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """重启容器（带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=True):
+        raise AuthorizationError("您没有权限重启该容器")
+    
     try:
         success = docker_service.restart_container(container_id)
         return {
@@ -337,8 +822,16 @@ async def restart_container(container_id: str):
 
 
 @app.post("/api/containers/{container_id}/delete")
-async def delete_container(container_id: str, force: bool = Query(False, description="是否强制删除运行中的容器")):
-    """删除容器"""
+async def delete_container(
+    container_id: str,
+    force: bool = Query(False, description="是否强制删除运行中的容器"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除容器（带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=True):
+        raise AuthorizationError("您没有权限删除该容器")
+    
     try:
         success = docker_service.delete_container(container_id, force=force)
         return {
@@ -353,8 +846,15 @@ async def delete_container(container_id: str, force: bool = Query(False, descrip
 
 
 @app.get("/api/containers/{container_id}/full-info")
-async def get_container_full_info(container_id: str):
-    """获取容器完整配置信息"""
+async def get_container_full_info(
+    container_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取容器完整配置信息（带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=False):
+        raise AuthorizationError("您没有权限查看该容器的信息")
+    
     try:
         info = docker_service.get_container_full_info(container_id)
         return {
@@ -369,7 +869,10 @@ async def get_container_full_info(container_id: str):
 
 
 @app.get("/api/images/{image_name_or_id}/layers")
-async def get_image_layers(image_name_or_id: str):
+async def get_image_layers(
+    image_name_or_id: str,
+    current_user: User = Depends(get_current_user)
+):
     """获取镜像层信息"""
     try:
         layers = docker_service.get_image_layers(image_name_or_id)
@@ -386,12 +889,26 @@ async def get_image_layers(image_name_or_id: str):
 
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats(
-    all_containers: bool = Query(False, description="是否包含已停止的容器")
+    all_containers: bool = Query(False, description="是否包含已停止的容器"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """获取 Dashboard 统计信息（所有容器的资源使用情况）"""
+    """获取 Dashboard 统计信息（所有容器的资源使用情况，带权限过滤）"""
     try:
         app_logger.debug(f"获取 Dashboard 统计信息: all_containers={all_containers}")
+        
+        allowed_container_ids = await get_user_allowed_containers(db, current_user)
+        
         stats = docker_service.get_all_containers_stats(all_containers=all_containers)
+        
+        if allowed_container_ids is not None:
+            allowed_ids_set = set(allowed_container_ids)
+            stats['containers'] = [
+                c for c in stats.get('containers', [])
+                if c.get('id') in allowed_ids_set
+            ]
+            stats['total'] = len(stats['containers'])
+        
         return {
             "success": True,
             "data": stats
@@ -405,12 +922,26 @@ async def get_dashboard_stats(
 
 @app.get("/api/dashboard/runtime")
 async def get_dashboard_runtime(
-    all_containers: bool = Query(False, description="是否包含已停止的容器")
+    all_containers: bool = Query(False, description="是否包含已停止的容器"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """获取容器运行时长统计"""
+    """获取容器运行时长统计（带权限过滤）"""
     try:
         app_logger.debug(f"获取容器运行时长统计: all_containers={all_containers}")
+        
         stats = docker_service.get_containers_runtime_stats(all_containers=all_containers)
+        
+        allowed_container_ids = await get_user_allowed_containers(db, current_user)
+        
+        if allowed_container_ids is not None:
+            allowed_ids_set = set(allowed_container_ids)
+            stats['containers'] = [
+                c for c in stats.get('containers', [])
+                if c.get('id') in allowed_ids_set
+            ]
+            stats['total'] = len(stats['containers'])
+        
         return {
             "success": True,
             "data": stats
@@ -423,8 +954,15 @@ async def get_dashboard_runtime(
 
 
 @app.get("/api/containers/{container_id}/stats")
-async def get_container_stats_endpoint(container_id: str):
-    """获取单个容器的统计信息"""
+async def get_container_stats_endpoint(
+    container_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取单个容器的统计信息（带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=False):
+        raise AuthorizationError("您没有权限查看该容器的统计信息")
+    
     try:
         stats = docker_service.get_container_stats(container_id)
         return {
@@ -489,14 +1027,14 @@ async def export_container_logs(
     format: str = Query('json', description="导出格式：txt、json、csv"),
     since: Optional[int] = Query(None, description="起始时间戳（Unix 时间戳，秒）"),
     until: Optional[int] = Query(None, description="结束时间戳（Unix 时间戳，秒）"),
-    search: Optional[str] = Query(None, description="搜索关键词，用于过滤日志消息内容")
+    search: Optional[str] = Query(None, description="搜索关键词，用于过滤日志消息内容"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """导出容器日志（支持 TXT/JSON/CSV 格式）
+    """导出容器日志（支持 TXT/JSON/CSV 格式，带权限检查）"""
+    if not await check_container_permission(db, current_user, container_id, require_write=False):
+        raise AuthorizationError("您没有权限导出该容器的日志")
     
-    - 支持与查询日志相同的筛选条件：时间范围、关键词搜索
-    - 导出格式：txt（纯文本）、json（JSON 数组）、csv（逗号分隔值）
-    - 返回文件下载响应
-    """
     try:
         app_logger.debug(f"导出日志参数: container_id={container_id}, format={format}, since={since}, until={until}, search={search}")
         
@@ -557,21 +1095,40 @@ async def websocket_log_stream(
     websocket: WebSocket,
     container_id: str,
     since: Optional[int] = None,
-    tail: Optional[int] = None
+    tail: Optional[int] = None,
+    token: Optional[str] = None
 ):
-    """WebSocket 实时日志流端点
-    
-    支持参数：
-    - container_id: 容器 ID
-    - since: 从指定时间戳开始获取日志（Unix 时间戳，秒）
-    - tail: 获取最后 N 行历史日志
-    
-    消息格式：
-    - 连接成功：{"type": "connected", "container_id": "..."}
-    - 日志消息：{"type": "log", "data": {"timestamp": 123, "stream": "stdout", "message": "..."}}
-    - 错误消息：{"type": "error", "message": "..."}
-    """
+    """WebSocket 实时日志流端点（带权限检查）"""
     app_logger.info(f"[WebSocket] 收到连接请求: container_id={container_id}, since={since}, tail={tail}")
+    
+    if not token:
+        await websocket.close(code=1008)
+        app_logger.warning(f"[WebSocket] 无 token，拒绝连接: container_id={container_id}")
+        return
+    
+    payload = decode_access_token(token)
+    if payload is None:
+        await websocket.close(code=1008)
+        app_logger.warning(f"[WebSocket] Token 无效，拒绝连接: container_id={container_id}")
+        return
+    
+    user_id = payload.get("sub")
+    if user_id is None:
+        await websocket.close(code=1008)
+        app_logger.warning(f"[WebSocket] Token 中无 user_id，拒绝连接: container_id={container_id}")
+        return
+    
+    async with async_session_maker() as db:
+        user = await get_user_by_id(db, user_id)
+        if not user or not user.is_active:
+            await websocket.close(code=1008)
+            app_logger.warning(f"[WebSocket] 用户不存在或已禁用: user_id={user_id}")
+            return
+        
+        if not await check_container_permission(db, user, container_id, require_write=False):
+            await websocket.close(code=1008)
+            app_logger.warning(f"[WebSocket] 用户无权限访问容器: user_id={user_id}, container_id={container_id}")
+            return
     
     await websocket.accept()
     
@@ -620,18 +1177,15 @@ async def websocket_log_stream(
             if len(data) < 8:
                 return False
             
-            # 检查流类型字节（应该是 0, 1, 或 2）
             stream_type = data[0]
             if stream_type not in (0, 1, 2):
                 return False
             
-            # 检查第 2-4 字节是否都是 0
             if data[1] != 0 or data[2] != 0 or data[3] != 0:
                 return False
             
-            # 检查内容长度是否合理（不能太大，比如超过 1MB）
             content_length = int.from_bytes(data[4:8], byteorder='big')
-            if content_length < 0 or content_length > 1024 * 1024:  # 1MB 限制
+            if content_length < 0 or content_length > 1024 * 1024:
                 return False
             
             return True
@@ -643,8 +1197,6 @@ async def websocket_log_stream(
                 if not line_str:
                     return None
                 
-                # TTY 模式下，日志格式为：时间戳 + 空格 + 消息
-                # 例如：2026-04-21T10:00:00.000000000Z This is a log message
                 parts = line_str.split(' ', 1)
                 
                 if len(parts) < 2:
@@ -660,7 +1212,7 @@ async def websocket_log_stream(
                 
                 return {
                     'timestamp': int(timestamp),
-                    'stream': 'stdout',  # TTY 模式下无法区分 stdout/stderr，默认为 stdout
+                    'stream': 'stdout',
                     'message': message
                 }
             except:
@@ -675,7 +1227,7 @@ async def websocket_log_stream(
                 entry_count = 0
                 byte_count = 0
                 mode_detected = False
-                is_tty_mode = False  # 默认假设非 TTY 模式
+                is_tty_mode = False
                 
                 for chunk in log_stream:
                     if stop_event.is_set():
@@ -685,16 +1237,13 @@ async def websocket_log_stream(
                     if not chunk:
                         continue
                     
-                    # 处理接收到的数据块（可能是单个字节或多个字节）
                     if isinstance(chunk, bytes):
                         buffer.extend(chunk)
                         byte_count += len(chunk)
                     elif isinstance(chunk, int):
-                        # 某些情况下可能返回单个整数（字节值）
                         buffer.append(chunk)
                         byte_count += 1
                     
-                    # 检测日志流模式（TTY 或非 TTY）
                     if not mode_detected and len(buffer) >= 8:
                         if is_valid_docker_header(bytes(buffer[:8])):
                             is_tty_mode = False
@@ -704,38 +1253,28 @@ async def websocket_log_stream(
                             app_logger.info(f"[WebSocket] 检测到 TTY 模式（纯文本格式，无 8 字节头部）")
                         mode_detected = True
                     
-                    # 根据模式解析日志
                     if mode_detected:
                         if not is_tty_mode:
-                            # 非 TTY 模式：使用 8 字节头部
                             while len(buffer) >= 8:
-                                # 解析8字节头部
                                 stream_type_byte = buffer[0]
                                 content_length = int.from_bytes(buffer[4:8], byteorder='big')
                                 
-                                # 检查是否有足够的数据
                                 total_entry_length = 8 + content_length
                                 if len(buffer) < total_entry_length:
-                                    # 数据不足，等待更多数据
                                     break
                                 
-                                # 提取完整的日志条目
                                 entry_bytes = bytes(buffer[:total_entry_length])
-                                
-                                # 从缓冲区中移除已处理的数据
                                 del buffer[:total_entry_length]
                                 
                                 entry_count += 1
                                 
-                                # 调试信息
-                                if entry_count <= 3:  # 只打印前3条的详细调试信息
+                                if entry_count <= 3:
                                     app_logger.info(f"[WebSocket] 组装完整日志条目 #{entry_count}:")
                                     app_logger.info(f"  总字节数: {total_entry_length}")
                                     app_logger.info(f"  流类型字节: {stream_type_byte}")
                                     app_logger.info(f"  内容长度: {content_length}")
                                     app_logger.info(f"  原始数据前30字节 (hex): {entry_bytes[:30].hex()}")
                                 
-                                # 解析日志条目
                                 parsed_log = docker_service.parse_log_line(entry_bytes)
                                 
                                 if entry_count <= 3:
@@ -750,25 +1289,19 @@ async def websocket_log_stream(
                                         except asyncio.QueueFull:
                                             time.sleep(0.1)
                         else:
-                            # TTY 模式：按换行符分割纯文本
-                            # 查找换行符
                             while True:
                                 newline_pos = -1
-                                # 查找 \n 或 \r\n
                                 for i in range(len(buffer)):
                                     if buffer[i] == ord('\n'):
                                         newline_pos = i
                                         break
                                 
                                 if newline_pos == -1:
-                                    # 没有找到换行符，等待更多数据
                                     break
                                 
-                                # 提取一行（包括换行符）
                                 line_bytes = bytes(buffer[:newline_pos + 1])
                                 del buffer[:newline_pos + 1]
                                 
-                                # 转换为字符串并解析
                                 try:
                                     line_str = line_bytes.decode('utf-8').strip()
                                 except:
@@ -779,12 +1312,10 @@ async def websocket_log_stream(
                                 
                                 entry_count += 1
                                 
-                                # 调试信息
                                 if entry_count <= 3:
                                     app_logger.info(f"[WebSocket] TTY 模式日志行 #{entry_count}:")
                                     app_logger.info(f"  原始行: {line_str[:100]}")
                                 
-                                # 解析日志行
                                 parsed_log = parse_tty_log_line(line_str)
                                 
                                 if entry_count <= 3:

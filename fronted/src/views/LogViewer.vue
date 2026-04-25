@@ -299,13 +299,17 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import LogStatsPanel from '../components/LogStatsPanel.vue'
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
+import { useAuth } from '../composables/useAuth'
 
 const route = useRoute()
+const router = useRouter()
 const { register } = useKeyboardShortcuts('log-viewer')
+
+const { isAdmin, currentUser, logout, currentToken, canWriteContainer } = useAuth()
 
 const containerId = ref(route.params.id)
 
@@ -774,6 +778,10 @@ const connectWebSocket = () => {
   let wsUrl = `${wsBaseUrl}/api/containers/${containerId.value}/logs/stream`
   
   const params = []
+  
+  if (currentToken.value) {
+    params.push(`token=${encodeURIComponent(currentToken.value)}`)
+  }
   
   if (logs.value.length > 0) {
     const lastLogTimestamp = logs.value[logs.value.length - 1].timestamp
