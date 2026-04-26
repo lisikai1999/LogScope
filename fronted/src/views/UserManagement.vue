@@ -100,7 +100,12 @@
                     </span>
                   </td>
                   <td>
-                    <span class="permission-count">{{ user.permissions?.length || 0 }} 个</span>
+                    <div class="permission-counts">
+                      <span class="permission-count">{{ user.permissions?.length || 0 }} 个容器</span>
+                      <span class="permission-count" v-if="user.name_pattern_permissions?.length > 0">
+                        + {{ user.name_pattern_permissions?.length || 0 }} 个模式
+                      </span>
+                    </div>
                   </td>
                   <td class="text-muted">{{ formatDate(user.created_at) }}</td>
                   <td class="text-muted">{{ user.last_login_at ? formatDate(user.last_login_at) : '从未登录' }}</td>
@@ -269,76 +274,173 @@
           </div>
           
           <div v-else>
-            <div class="permission-toolbar">
-              <button class="btn btn-primary btn-sm" @click="openAddPermissionModal">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="12" y1="5" x2="12" y2="19"></line>
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-                添加权限
+            <div class="permission-tabs">
+              <button 
+                class="permission-tab"
+                :class="{ active: activePermissionTab === 'containers' }"
+                @click="activePermissionTab = 'containers'"
+              >
+                容器ID权限 ({{ userPermissions?.permissions?.length || 0 }})
               </button>
-              <button class="btn btn-outline btn-sm" @click="refreshPermissions">
-                刷新
+              <button 
+                class="permission-tab"
+                :class="{ active: activePermissionTab === 'patterns' }"
+                @click="activePermissionTab = 'patterns'"
+              >
+                容器名模式权限 ({{ userPermissions?.name_pattern_permissions?.length || 0 }})
               </button>
             </div>
             
-            <div v-if="userPermissions.length === 0" class="empty-state">
-              <div class="empty-icon">📦</div>
-              <p>暂无权限配置</p>
-              <p class="text-muted">点击"添加权限"为用户分配容器权限</p>
+            <div v-if="activePermissionTab === 'containers'">
+              <div class="permission-toolbar">
+                <button class="btn btn-primary btn-sm" @click="openAddPermissionModal">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                  添加容器权限
+                </button>
+                <button class="btn btn-outline btn-sm" @click="refreshPermissions">
+                  刷新
+                </button>
+              </div>
+              
+              <div v-if="!userPermissions?.permissions?.length" class="empty-state">
+                <div class="empty-icon">📦</div>
+                <p>暂无容器ID权限配置</p>
+                <p class="text-muted">点击"添加容器权限"为用户分配特定容器的权限</p>
+              </div>
+              
+              <div v-else class="permission-list">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>容器ID</th>
+                      <th>容器名</th>
+                      <th>权限级别</th>
+                      <th>创建时间</th>
+                      <th class="text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="perm in userPermissions.permissions" :key="perm.id">
+                      <td>
+                        <span class="font-mono">{{ perm.container_id }}</span>
+                      </td>
+                      <td>
+                        <span class="text-muted">{{ perm.container_name || '-' }}</span>
+                      </td>
+                      <td>
+                        <span 
+                          class="badge"
+                          :class="perm.permission_level === 'read_write' ? 'badge-success' : 'badge-info'"
+                        >
+                          {{ perm.permission_level === 'read_write' ? '读写' : '只读' }}
+                        </span>
+                      </td>
+                      <td class="text-muted">{{ formatDate(perm.created_at) }}</td>
+                      <td class="text-right">
+                        <div class="action-buttons">
+                          <button 
+                            class="btn btn-ghost btn-sm action-btn"
+                            @click="openEditPermissionModal(perm)"
+                            title="编辑权限"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                          </button>
+                          <button 
+                            class="btn btn-ghost btn-sm action-btn action-btn-danger"
+                            @click="confirmDeletePermission(perm)"
+                            title="删除权限"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
             
-            <div v-else class="permission-list">
-              <table class="table">
-                <thead>
-                  <tr>
-                    <th>容器ID</th>
-                    <th>权限级别</th>
-                    <th>创建时间</th>
-                    <th class="text-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="perm in userPermissions" :key="perm.id">
-                    <td>
-                      <span class="font-mono">{{ perm.container_id }}</span>
-                    </td>
-                    <td>
-                      <span 
-                        class="badge"
-                        :class="perm.permission_level === 'read_write' ? 'badge-success' : 'badge-info'"
-                      >
-                        {{ perm.permission_level === 'read_write' ? '读写' : '只读' }}
-                      </span>
-                    </td>
-                    <td class="text-muted">{{ formatDate(perm.created_at) }}</td>
-                    <td class="text-right">
-                      <div class="action-buttons">
-                        <button 
-                          class="btn btn-ghost btn-sm action-btn"
-                          @click="openEditPermissionModal(perm)"
-                          title="编辑权限"
+            <div v-else-if="activePermissionTab === 'patterns'">
+              <div class="permission-toolbar">
+                <button class="btn btn-primary btn-sm" @click="openAddPatternPermissionModal">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                  添加模式权限
+                </button>
+                <button class="btn btn-outline btn-sm" @click="refreshPermissions">
+                  刷新
+                </button>
+              </div>
+              
+              <div v-if="!userPermissions?.name_pattern_permissions?.length" class="empty-state">
+                <div class="empty-icon">🔍</div>
+                <p>暂无容器名模式权限配置</p>
+                <p class="text-muted">使用通配符模式为用户分配批量容器权限，如 demo*、*test* 等</p>
+              </div>
+              
+              <div v-else class="permission-list">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>容器名模式</th>
+                      <th>权限级别</th>
+                      <th>创建时间</th>
+                      <th class="text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="perm in userPermissions.name_pattern_permissions" :key="perm.id">
+                      <td>
+                        <span class="font-mono">{{ perm.name_pattern }}</span>
+                      </td>
+                      <td>
+                        <span 
+                          class="badge"
+                          :class="perm.permission_level === 'read_write' ? 'badge-success' : 'badge-info'"
                         >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                          </svg>
-                        </button>
-                        <button 
-                          class="btn btn-ghost btn-sm action-btn action-btn-danger"
-                          @click="confirmDeletePermission(perm)"
-                          title="删除权限"
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="3 6 5 6 21 6"></polyline>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                          </svg>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                          {{ perm.permission_level === 'read_write' ? '读写' : '只读' }}
+                        </span>
+                      </td>
+                      <td class="text-muted">{{ formatDate(perm.created_at) }}</td>
+                      <td class="text-right">
+                        <div class="action-buttons">
+                          <button 
+                            class="btn btn-ghost btn-sm action-btn"
+                            @click="openEditPatternPermissionModal(perm)"
+                            title="编辑权限"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                            </svg>
+                          </button>
+                          <button 
+                            class="btn btn-ghost btn-sm action-btn action-btn-danger"
+                            @click="confirmDeletePatternPermission(perm)"
+                            title="删除权限"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -349,7 +451,7 @@
     <div v-if="showAddPermissionModal" class="modal-overlay" @click.self="closeAddPermissionModal">
       <div class="modal modal-small">
         <div class="modal-header">
-          <h3 class="modal-title">{{ editingPermission ? '编辑权限' : '添加权限' }}</h3>
+          <h3 class="modal-title">{{ editingPermission ? '编辑权限' : '添加容器权限' }}</h3>
           <button class="modal-close" @click="closeAddPermissionModal">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -377,7 +479,7 @@
             <div class="form-group">
               <label class="form-label">权限级别</label>
               <select v-model="permissionForm.permission_level" class="form-select" :disabled="permissionFormLoading">
-                <option value="read_only">只读（仅可查看日志）</option>
+                <option value="read_only">只读（仅可查看日志和信息）</option>
                 <option value="read_write">读写（可查看、启动、停止、重启、删除）</option>
               </select>
             </div>
@@ -388,6 +490,73 @@
               </button>
               <button type="submit" class="btn btn-primary" :disabled="permissionFormLoading || (!editingPermission && !permissionForm.container_id)">
                 {{ permissionFormLoading ? '提交中...' : (editingPermission ? '保存' : '添加') }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- 添加/编辑模式权限模态框 -->
+    <div v-if="showAddPatternPermissionModal" class="modal-overlay" @click.self="closeAddPatternPermissionModal">
+      <div class="modal modal-small">
+        <div class="modal-header">
+          <h3 class="modal-title">{{ editingPatternPermission ? '编辑模式权限' : '添加模式权限' }}</h3>
+          <button class="modal-close" @click="closeAddPatternPermissionModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div v-if="patternPermissionFormError" class="form-error">{{ patternPermissionFormError }}</div>
+          
+          <form @submit.prevent="handleSubmitPatternPermission">
+            <div class="form-group" v-if="!editingPatternPermission">
+              <label class="form-label">容器名模式 <span class="required">*</span></label>
+              <input 
+                type="text" 
+                v-model="patternPermissionForm.name_pattern" 
+                class="form-input"
+                placeholder="例如: demo*、*test*、*-prod"
+                :disabled="patternPermissionFormLoading"
+                required
+              />
+              <p class="form-hint">
+                <strong>通配符说明:</strong><br>
+                • <code>demo*</code> - 匹配以 demo 开头的容器名<br>
+                • <code>*test*</code> - 匹配包含 test 的容器名<br>
+                • <code>*-prod</code> - 匹配以 -prod 结尾的容器名
+              </p>
+            </div>
+            
+            <div class="form-group" v-else>
+              <label class="form-label">容器名模式</label>
+              <input 
+                type="text" 
+                v-model="patternPermissionForm.name_pattern" 
+                class="form-input"
+                placeholder="例如: demo*、*test*、*-prod"
+                :disabled="patternPermissionFormLoading"
+              />
+              <p class="form-hint">修改模式会影响所有匹配的容器权限</p>
+            </div>
+            
+            <div class="form-group">
+              <label class="form-label">权限级别</label>
+              <select v-model="patternPermissionForm.permission_level" class="form-select" :disabled="patternPermissionFormLoading">
+                <option value="read_only">只读（仅可查看日志和信息）</option>
+                <option value="read_write">读写（可查看、启动、停止、重启、删除）</option>
+              </select>
+            </div>
+            
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline" @click="closeAddPatternPermissionModal" :disabled="patternPermissionFormLoading">
+                取消
+              </button>
+              <button type="submit" class="btn btn-primary" :disabled="patternPermissionFormLoading || (!editingPatternPermission && !patternPermissionForm.name_pattern)">
+                {{ patternPermissionFormLoading ? '提交中...' : (editingPatternPermission ? '保存' : '添加') }}
               </button>
             </div>
           </form>
@@ -468,7 +637,8 @@ const userForm = ref({
 const showPermissionModal = ref(false)
 const permissionUser = ref(null)
 const permissionLoading = ref(false)
-const userPermissions = ref([])
+const userPermissions = ref({ permissions: [], name_pattern_permissions: [] })
+const activePermissionTab = ref('containers')
 
 
 const showAddPermissionModal = ref(false)
@@ -477,6 +647,16 @@ const permissionFormLoading = ref(false)
 const permissionFormError = ref('')
 const permissionForm = ref({
   container_id: '',
+  permission_level: 'read_only'
+})
+
+
+const showAddPatternPermissionModal = ref(false)
+const editingPatternPermission = ref(null)
+const patternPermissionFormLoading = ref(false)
+const patternPermissionFormError = ref('')
+const patternPermissionForm = ref({
+  name_pattern: '',
   permission_level: 'read_only'
 })
 
@@ -631,7 +811,8 @@ const openPermissionModal = async (user) => {
 const closePermissionModal = () => {
   showPermissionModal.value = false
   permissionUser.value = null
-  userPermissions.value = []
+  userPermissions.value = { permissions: [], name_pattern_permissions: [] }
+  activePermissionTab.value = 'containers'
 }
 
 
@@ -651,6 +832,39 @@ const refreshPermissions = async () => {
   } finally {
     permissionLoading.value = false
   }
+}
+
+
+const openAddPatternPermissionModal = () => {
+  editingPatternPermission.value = null
+  patternPermissionForm.value = {
+    name_pattern: '',
+    permission_level: 'read_only'
+  }
+  patternPermissionFormError.value = ''
+  showAddPatternPermissionModal.value = true
+}
+
+
+const openEditPatternPermissionModal = (perm) => {
+  editingPatternPermission.value = { ...perm }
+  patternPermissionForm.value = {
+    name_pattern: perm.name_pattern,
+    permission_level: perm.permission_level
+  }
+  patternPermissionFormError.value = ''
+  showAddPatternPermissionModal.value = true
+}
+
+
+const closeAddPatternPermissionModal = () => {
+  showAddPatternPermissionModal.value = false
+  editingPatternPermission.value = null
+  patternPermissionForm.value = {
+    name_pattern: '',
+    permission_level: 'read_only'
+  }
+  patternPermissionFormError.value = ''
 }
 
 
@@ -742,6 +956,72 @@ const confirmDeletePermission = (perm) => {
   deleteCallback = async () => {
     await axios.delete(
       `/api/users/${permissionUser.value.id}/permissions/${perm.container_id}`
+    )
+  }
+  showDeleteConfirm.value = true
+}
+
+
+const handleSubmitPatternPermission = async () => {
+  if (!editingPatternPermission.value && !patternPermissionForm.value.name_pattern) {
+    patternPermissionFormError.value = '请输入容器名模式'
+    return
+  }
+  
+  try {
+    patternPermissionFormLoading.value = true
+    patternPermissionFormError.value = ''
+    
+    if (editingPatternPermission.value) {
+      const updateData = {
+        permission_level: patternPermissionForm.value.permission_level
+      }
+      if (patternPermissionForm.value.name_pattern !== editingPatternPermission.value.name_pattern) {
+        updateData.name_pattern = patternPermissionForm.value.name_pattern
+      }
+      
+      const response = await axios.put(
+        `/api/users/${permissionUser.value.id}/name-pattern-permissions/${editingPatternPermission.value.id}`,
+        updateData
+      )
+      
+      if (response.data.success) {
+        showToast('模式权限更新成功', 'success')
+        closeAddPatternPermissionModal()
+        refreshPermissions()
+      } else {
+        patternPermissionFormError.value = response.data.error || '更新权限失败'
+      }
+    } else {
+      const response = await axios.post(
+        `/api/users/${permissionUser.value.id}/name-pattern-permissions`,
+        {
+          name_pattern: patternPermissionForm.value.name_pattern,
+          permission_level: patternPermissionForm.value.permission_level
+        }
+      )
+      
+      if (response.data.success) {
+        showToast('模式权限添加成功', 'success')
+        closeAddPatternPermissionModal()
+        refreshPermissions()
+      } else {
+        patternPermissionFormError.value = response.data.error || '添加权限失败'
+      }
+    }
+  } catch (err) {
+    patternPermissionFormError.value = err.response?.data?.message || err.message || '操作失败'
+  } finally {
+    patternPermissionFormLoading.value = false
+  }
+}
+
+
+const confirmDeletePatternPermission = (perm) => {
+  deleteConfirmMessage.value = `确定要删除容器名模式 "${perm.name_pattern}" 的权限吗？`
+  deleteCallback = async () => {
+    await axios.delete(
+      `/api/users/${permissionUser.value.id}/name-pattern-permissions/${perm.id}`
     )
   }
   showDeleteConfirm.value = true
@@ -1058,6 +1338,41 @@ onMounted(() => {
 .permission-count {
   font-size: 0.875rem;
   color: var(--text-secondary);
+}
+
+.permission-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.permission-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.75rem;
+}
+
+.permission-tab {
+  padding: 0.5rem 1rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  border-radius: 0.375rem;
+  transition: all 0.2s;
+}
+
+.permission-tab:hover {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
+.permission-tab.active {
+  background-color: var(--primary-color);
+  color: white;
 }
 
 .action-buttons {
