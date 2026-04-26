@@ -32,7 +32,7 @@ from schemas import (
     ContainerPermissionCreate, ContainerPermissionUpdate, 
     ContainerPermissionResponse, UserWithPermissionsResponse,
     PasswordChange, PermissionCheckResponse, UserPermissionsResponse,
-    ContainerPermissionInfo, NamePatternPermissionCreate,
+    ContainerPermissionInfo, NamePatternPermissionBase, NamePatternPermissionCreate,
     NamePatternPermissionUpdate, NamePatternPermissionResponse,
     NamePatternPermissionInfo
 )
