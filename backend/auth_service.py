@@ -1,12 +1,18 @@
 import bcrypt
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from models import User, UserContainerPermission, UserRole, ContainerPermission
+from models import (
+    User, 
+    UserContainerPermission, 
+    UserContainerNamePatternPermission,
+    UserRole, 
+    ContainerPermission
+)
 from config import settings
 from database import get_db
 from logger import app_logger
@@ -151,7 +157,8 @@ async def check_container_permission(
     db: AsyncSession,
     user: User,
     container_id: str,
-    require_write: bool = False
+    require_write: bool = False,
+    container_name: Optional[str] = None
 ) -> bool:
     if user.is_admin():
         return True
@@ -164,18 +171,38 @@ async def check_container_permission(
     )
     permission = result.scalar_one_or_none()
     
-    if not permission:
-        return False
+    if permission:
+        if require_write:
+            return permission.can_write()
+        return permission.can_read()
     
-    if require_write:
-        return permission.can_write()
+    if container_name is not None:
+        pattern_permissions = await get_user_name_pattern_permissions(db, user)
+        for pattern_permission in pattern_permissions:
+            if pattern_permission.matches(container_name):
+                if require_write:
+                    return pattern_permission.can_write()
+                return pattern_permission.can_read()
     
-    return permission.can_read()
+    return False
+
+
+async def get_user_name_pattern_permissions(
+    db: AsyncSession,
+    user: User
+) -> List[UserContainerNamePatternPermission]:
+    result = await db.execute(
+        select(UserContainerNamePatternPermission).where(
+            UserContainerNamePatternPermission.user_id == user.id
+        )
+    )
+    return result.scalars().all()
 
 
 async def get_user_allowed_containers(
     db: AsyncSession,
-    user: User
+    user: User,
+    containers: Optional[List[Dict[str, Any]]] = None
 ) -> Optional[List[str]]:
     if user.is_admin():
         return None
@@ -186,4 +213,23 @@ async def get_user_allowed_containers(
         )
     )
     container_ids = [row[0] for row in result.fetchall()]
+    
+    if containers is not None:
+        pattern_permissions = await get_user_name_pattern_permissions(db, user)
+        for container in containers:
+            container_id = container.get('id', '')
+            container_name = None
+            
+            if 'names' in container and container['names']:
+                container_name = container['names'][0].replace('/', '')
+            elif 'name' in container:
+                container_name = container['name'].replace('/', '')
+            
+            if container_name:
+                for pattern_permission in pattern_permissions:
+                    if pattern_permission.matches(container_name):
+                        if container_id not in container_ids:
+                            container_ids.append(container_id)
+                        break
+    
     return container_ids if container_ids else []

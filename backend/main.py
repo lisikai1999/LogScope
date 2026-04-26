@@ -20,20 +20,28 @@ from docker_service import docker_service
 from logger import app_logger
 from config import settings
 from database import get_db, async_session_maker, init_db
-from models import User, UserContainerPermission, UserRole, ContainerPermission
+from models import (
+    User, 
+    UserContainerPermission, 
+    UserContainerNamePatternPermission,
+    UserRole, 
+    ContainerPermission
+)
 from schemas import (
     UserLogin, Token, UserCreate, UserUpdate, UserResponse, 
     ContainerPermissionCreate, ContainerPermissionUpdate, 
     ContainerPermissionResponse, UserWithPermissionsResponse,
     PasswordChange, PermissionCheckResponse, UserPermissionsResponse,
-    ContainerPermissionInfo
+    ContainerPermissionInfo, NamePatternPermissionCreate,
+    NamePatternPermissionUpdate, NamePatternPermissionResponse,
+    NamePatternPermissionInfo
 )
 from auth_service import (
     get_password_hash, verify_password, create_access_token,
     decode_access_token, get_user_by_username, get_user_by_id,
     authenticate_user, create_default_admin, get_current_user,
     get_current_admin_user, check_container_permission,
-    get_user_allowed_containers
+    get_user_allowed_containers, get_user_name_pattern_permissions
 )
 from exceptions import (
     AppException,
@@ -168,7 +176,9 @@ async def get_current_user_info(
 ):
     """获取当前用户信息和权限"""
     result = await db.execute(
-        select(User).options(selectinload(User.permissions)).where(User.id == current_user.id)
+        select(User)
+        .options(selectinload(User.permissions), selectinload(User.name_pattern_permissions))
+        .where(User.id == current_user.id)
     )
     user = result.scalar_one_or_none()
     
@@ -193,6 +203,17 @@ async def get_current_user_info(
                 updated_at=p.updated_at
             )
             for p in user.permissions
+        ],
+        name_pattern_permissions=[
+            NamePatternPermissionResponse(
+                id=np.id,
+                user_id=np.user_id,
+                name_pattern=np.name_pattern,
+                permission_level=np.permission_level,
+                created_at=np.created_at,
+                updated_at=np.updated_at
+            )
+            for np in user.name_pattern_permissions
         ]
     )
 
@@ -255,7 +276,9 @@ async def get_user(
 ):
     """获取指定用户信息（管理员）"""
     result = await db.execute(
-        select(User).options(selectinload(User.permissions)).where(User.id == user_id)
+        select(User)
+        .options(selectinload(User.permissions), selectinload(User.name_pattern_permissions))
+        .where(User.id == user_id)
     )
     user = result.scalar_one_or_none()
     
@@ -280,6 +303,17 @@ async def get_user(
                 updated_at=p.updated_at
             )
             for p in user.permissions
+        ],
+        name_pattern_permissions=[
+            NamePatternPermissionResponse(
+                id=np.id,
+                user_id=np.user_id,
+                name_pattern=np.name_pattern,
+                permission_level=np.permission_level,
+                created_at=np.created_at,
+                updated_at=np.updated_at
+            )
+            for np in user.name_pattern_permissions
         ]
     )
     
@@ -402,6 +436,11 @@ async def get_user_permissions(
     )
     permissions = result.scalars().all()
     
+    pattern_result = await db.execute(
+        select(UserContainerNamePatternPermission).where(UserContainerNamePatternPermission.user_id == user_id)
+    )
+    pattern_permissions = pattern_result.scalars().all()
+    
     permission_infos = []
     for p in permissions:
         container_name = None
@@ -422,10 +461,22 @@ async def get_user_permissions(
             )
         )
     
+    pattern_permission_infos = []
+    for pp in pattern_permissions:
+        pattern_permission_infos.append(
+            NamePatternPermissionInfo(
+                name_pattern=pp.name_pattern,
+                permission_level=pp.permission_level,
+                can_read=pp.can_read(),
+                can_write=pp.can_write()
+            )
+        )
+    
     permissions_response = UserPermissionsResponse(
         user_id=user_id,
         username=user.username,
-        permissions=permission_infos
+        permissions=permission_infos,
+        name_pattern_permissions=pattern_permission_infos
     )
     
     return {
@@ -539,6 +590,198 @@ async def remove_user_permission(
     return {"success": True, "message": "权限已移除"}
 
 
+@app.get("/api/users/{user_id}/name-pattern-permissions")
+async def get_user_name_pattern_permissions(
+    user_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取用户的容器名模式权限列表（管理员）"""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    result = await db.execute(
+        select(UserContainerNamePatternPermission).where(
+            UserContainerNamePatternPermission.user_id == user_id
+        )
+    )
+    pattern_permissions = result.scalars().all()
+    
+    permission_responses = [
+        NamePatternPermissionResponse(
+            id=pp.id,
+            user_id=pp.user_id,
+            name_pattern=pp.name_pattern,
+            permission_level=pp.permission_level,
+            created_at=pp.created_at,
+            updated_at=pp.updated_at
+        )
+        for pp in pattern_permissions
+    ]
+    
+    return {
+        "success": True,
+        "data": permission_responses
+    }
+
+
+@app.post("/api/users/{user_id}/name-pattern-permissions")
+async def add_user_name_pattern_permission(
+    user_id: int,
+    permission_data: NamePatternPermissionBase,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """为用户添加容器名模式权限（管理员）"""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    existing_permission = await db.execute(
+        select(UserContainerNamePatternPermission).where(
+            and_(
+                UserContainerNamePatternPermission.user_id == user_id,
+                UserContainerNamePatternPermission.name_pattern == permission_data.name_pattern
+            )
+        )
+    )
+    if existing_permission.scalar_one_or_none():
+        raise PermissionAlreadyExistsError("该用户对该容器名模式的权限已存在")
+    
+    new_permission = UserContainerNamePatternPermission(
+        user_id=user_id,
+        name_pattern=permission_data.name_pattern,
+        permission_level=permission_data.permission_level.value
+    )
+    
+    db.add(new_permission)
+    await db.commit()
+    await db.refresh(new_permission)
+    
+    permission_response = NamePatternPermissionResponse(
+        id=new_permission.id,
+        user_id=new_permission.user_id,
+        name_pattern=new_permission.name_pattern,
+        permission_level=new_permission.permission_level,
+        created_at=new_permission.created_at,
+        updated_at=new_permission.updated_at
+    )
+    
+    return {
+        "success": True,
+        "data": permission_response
+    }
+
+
+@app.put("/api/users/{user_id}/name-pattern-permissions/{pattern_id}")
+async def update_user_name_pattern_permission(
+    user_id: int,
+    pattern_id: int,
+    permission_data: NamePatternPermissionUpdate,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """更新用户的容器名模式权限（管理员）"""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    permission = await db.execute(
+        select(UserContainerNamePatternPermission).where(
+            and_(
+                UserContainerNamePatternPermission.user_id == user_id,
+                UserContainerNamePatternPermission.id == pattern_id
+            )
+        )
+    )
+    permission = permission.scalar_one_or_none()
+    
+    if not permission:
+        raise PermissionNotFoundError("权限不存在")
+    
+    if permission_data.name_pattern:
+        existing = await db.execute(
+            select(UserContainerNamePatternPermission).where(
+                and_(
+                    UserContainerNamePatternPermission.user_id == user_id,
+                    UserContainerNamePatternPermission.name_pattern == permission_data.name_pattern,
+                    UserContainerNamePatternPermission.id != pattern_id
+                )
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise PermissionAlreadyExistsError("该容器名模式的权限已存在")
+        
+        permission.name_pattern = permission_data.name_pattern
+    
+    if permission_data.permission_level:
+        permission.permission_level = permission_data.permission_level.value
+    
+    await db.commit()
+    
+    return {"success": True, "message": "权限更新成功"}
+
+
+@app.delete("/api/users/{user_id}/name-pattern-permissions/{pattern_id}")
+async def remove_user_name_pattern_permission(
+    user_id: int,
+    pattern_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """移除用户的容器名模式权限（管理员）"""
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        raise UserNotFoundError(f"用户不存在: {user_id}")
+    
+    permission = await db.execute(
+        select(UserContainerNamePatternPermission).where(
+            and_(
+                UserContainerNamePatternPermission.user_id == user_id,
+                UserContainerNamePatternPermission.id == pattern_id
+            )
+        )
+    )
+    permission = permission.scalar_one_or_none()
+    
+    if not permission:
+        raise PermissionNotFoundError("权限不存在")
+    
+    await db.delete(permission)
+    await db.commit()
+    
+    return {"success": True, "message": "权限已移除"}
+
+
+async def check_container_permission_with_name(
+    db: AsyncSession,
+    user: User,
+    container_id: str,
+    require_write: bool = False
+) -> bool:
+    """检查容器权限，自动获取容器名以支持模式匹配"""
+    if user.is_admin():
+        return True
+    
+    has_explicit_permission = await check_container_permission(db, user, container_id, require_write, container_name=None)
+    if has_explicit_permission:
+        return True
+    
+    container_name = None
+    try:
+        container_info = docker_service.get_container_info(container_id)
+        if container_info and container_info.get('names'):
+            container_name = container_info['names'][0].replace('/', '')
+    except Exception:
+        pass
+    
+    if container_name:
+        return await check_container_permission(db, user, container_id, require_write, container_name)
+    
+    return False
+
+
 async def filter_containers_by_permission(
     containers: List[Dict[str, Any]],
     allowed_container_ids: Optional[List[str]]
@@ -567,14 +810,14 @@ async def list_containers(
     try:
         app_logger.debug(f"Received params: all_containers={all_containers}, page={page}, page_size={page_size}, search={search}")
         
-        allowed_container_ids = await get_user_allowed_containers(db, current_user)
-        
         result = docker_service.list_containers(
             all_containers=all_containers,
             page=1,
             page_size=10000,
             search=search
         )
+        
+        allowed_container_ids = await get_user_allowed_containers(db, current_user, result['data'])
         
         filtered_containers = await filter_containers_by_permission(
             result['data'],
@@ -624,7 +867,7 @@ async def get_container_logs(
     db: AsyncSession = Depends(get_db)
 ):
     """获取容器日志（支持时间筛选和分页，带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=False):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=False):
         raise AuthorizationError("您没有权限查看该容器的日志")
     
     try:
@@ -686,7 +929,7 @@ async def start_containers_batch(
     """批量启动容器（带权限检查）"""
     if not current_user.is_admin():
         for container_id in container_ids:
-            if not await check_container_permission(db, current_user, container_id, require_write=True):
+            if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
                 raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
     
     try:
@@ -713,7 +956,7 @@ async def stop_containers_batch(
     """批量停止容器（带权限检查）"""
     if not current_user.is_admin():
         for container_id in container_ids:
-            if not await check_container_permission(db, current_user, container_id, require_write=True):
+            if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
                 raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
     
     try:
@@ -741,7 +984,7 @@ async def delete_containers_batch(
     """批量删除容器（带权限检查）"""
     if not current_user.is_admin():
         for container_id in container_ids:
-            if not await check_container_permission(db, current_user, container_id, require_write=True):
+            if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
                 raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
     
     try:
@@ -766,7 +1009,7 @@ async def get_container_info(
     db: AsyncSession = Depends(get_db)
 ):
     """获取容器详情（带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=False):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=False):
         raise AuthorizationError("您没有权限查看该容器的信息")
     
     try:
@@ -789,7 +1032,7 @@ async def start_container(
     db: AsyncSession = Depends(get_db)
 ):
     """启动容器（带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=True):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
         raise AuthorizationError("您没有权限启动该容器")
     
     try:
@@ -812,7 +1055,7 @@ async def stop_container(
     db: AsyncSession = Depends(get_db)
 ):
     """停止容器（带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=True):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
         raise AuthorizationError("您没有权限停止该容器")
     
     try:
@@ -835,7 +1078,7 @@ async def restart_container(
     db: AsyncSession = Depends(get_db)
 ):
     """重启容器（带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=True):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
         raise AuthorizationError("您没有权限重启该容器")
     
     try:
@@ -859,7 +1102,7 @@ async def delete_container(
     db: AsyncSession = Depends(get_db)
 ):
     """删除容器（带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=True):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
         raise AuthorizationError("您没有权限删除该容器")
     
     try:
@@ -882,7 +1125,7 @@ async def get_container_full_info(
     db: AsyncSession = Depends(get_db)
 ):
     """获取容器完整配置信息（带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=False):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=False):
         raise AuthorizationError("您没有权限查看该容器的信息")
     
     try:
@@ -927,9 +1170,9 @@ async def get_dashboard_stats(
     try:
         app_logger.debug(f"获取 Dashboard 统计信息: all_containers={all_containers}")
         
-        allowed_container_ids = await get_user_allowed_containers(db, current_user)
-        
         stats = docker_service.get_all_containers_stats(all_containers=all_containers)
+        
+        allowed_container_ids = await get_user_allowed_containers(db, current_user, stats.get('containers', []))
         
         if allowed_container_ids is not None:
             allowed_ids_set = set(allowed_container_ids)
@@ -962,7 +1205,7 @@ async def get_dashboard_runtime(
         
         stats = docker_service.get_containers_runtime_stats(all_containers=all_containers)
         
-        allowed_container_ids = await get_user_allowed_containers(db, current_user)
+        allowed_container_ids = await get_user_allowed_containers(db, current_user, stats.get('containers', []))
         
         if allowed_container_ids is not None:
             allowed_ids_set = set(allowed_container_ids)
@@ -990,7 +1233,7 @@ async def get_container_stats_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     """获取单个容器的统计信息（带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=False):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=False):
         raise AuthorizationError("您没有权限查看该容器的统计信息")
     
     try:
@@ -1062,7 +1305,7 @@ async def export_container_logs(
     db: AsyncSession = Depends(get_db)
 ):
     """导出容器日志（支持 TXT/JSON/CSV 格式，带权限检查）"""
-    if not await check_container_permission(db, current_user, container_id, require_write=False):
+    if not await check_container_permission_with_name(db, current_user, container_id, require_write=False):
         raise AuthorizationError("您没有权限导出该容器的日志")
     
     try:
@@ -1155,6 +1398,14 @@ async def websocket_log_stream(
         app_logger.warning(f"[WebSocket] Token 中 user_id 格式无效: container_id={container_id}")
         return
     
+    container_name = None
+    try:
+        container_info = docker_service.get_container_info(container_id)
+        if container_info and container_info.get('names'):
+            container_name = container_info['names'][0].replace('/', '')
+    except Exception:
+        pass
+    
     async with async_session_maker() as db:
         user = await get_user_by_id(db, user_id)
         if not user or not user.is_active:
@@ -1162,7 +1413,7 @@ async def websocket_log_stream(
             app_logger.warning(f"[WebSocket] 用户不存在或已禁用: user_id={user_id}")
             return
         
-        if not await check_container_permission(db, user, container_id, require_write=False):
+        if not await check_container_permission(db, user, container_id, require_write=False, container_name=container_name):
             await websocket.close(code=1008)
             app_logger.warning(f"[WebSocket] 用户无权限访问容器: user_id={user_id}, container_id={container_id}")
             return
@@ -1170,14 +1421,6 @@ async def websocket_log_stream(
     await websocket.accept()
     
     app_logger.info(f"[WebSocket] 连接已接受: container_id={container_id}")
-    
-    container_name = None
-    try:
-        container_info = docker_service.get_container_info(container_id)
-        if container_info and container_info.get('names'):
-            container_name = container_info['names'][0]
-    except Exception:
-        pass
     
     log_queue = asyncio.Queue(maxsize=1000)
     stop_event = asyncio.Event()
