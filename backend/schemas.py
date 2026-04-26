@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
-from models import UserRole, ContainerPermission
+from models import UserRole, ContainerPermission, AuditAction
 
 
 class UserBase(BaseModel):
@@ -133,3 +133,38 @@ class PermissionCheckResponse(BaseModel):
 class PasswordChange(BaseModel):
     old_password: str = Field(..., min_length=6, max_length=100)
     new_password: str = Field(..., min_length=6, max_length=100)
+
+
+class AuditLogResponse(BaseModel):
+    id: int
+    user_id: Optional[int] = None
+    username: Optional[str] = None
+    action: str
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+    description: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SystemSettingResponse(BaseModel):
+    id: int
+    key: str
+    value: Optional[str] = None
+    description: Optional[str] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogRetentionUpdate(BaseModel):
+    retention_days: int = Field(..., ge=1, le=3650, description="日志保留天数，1-3650天")

@@ -25,7 +25,9 @@ from models import (
     UserContainerPermission, 
     UserContainerNamePatternPermission,
     UserRole, 
-    ContainerPermission
+    ContainerPermission,
+    AuditAction,
+    SystemSetting
 )
 from schemas import (
     UserLogin, Token, UserCreate, UserUpdate, UserResponse, 
@@ -34,7 +36,15 @@ from schemas import (
     PasswordChange, PermissionCheckResponse, UserPermissionsResponse,
     ContainerPermissionInfo, NamePatternPermissionBase, NamePatternPermissionCreate,
     NamePatternPermissionUpdate, NamePatternPermissionResponse,
-    NamePatternPermissionInfo
+    NamePatternPermissionInfo,
+    AuditLogResponse,
+    SystemSettingResponse,
+    AuditLogRetentionUpdate
+)
+from audit_service import (
+    AuditService,
+    start_audit_cleanup_scheduler,
+    stop_audit_cleanup_scheduler
 )
 from auth_service import (
     get_password_hash, verify_password, create_access_token,
@@ -63,7 +73,12 @@ async def lifespan(app: FastAPI):
     await init_db()
     async with async_session_maker() as session:
         await create_default_admin(session)
+    
+    await start_audit_cleanup_scheduler(async_session_maker)
+    
     yield
+    
+    await stop_audit_cleanup_scheduler()
 
 
 app = FastAPI(
@@ -151,16 +166,44 @@ async def health_check():
 @app.post("/api/auth/login", response_model=Token)
 async def login(
     login_data: UserLogin,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
     """用户登录"""
+    audit_service = AuditService(db)
+    ip_address = get_client_ip(request)
+    user_agent = get_user_agent(request)
+    
     user = await authenticate_user(db, login_data.username, login_data.password)
     
     if not user:
+        await audit_service.log_action(
+            username=login_data.username,
+            action=AuditAction.LOGIN,
+            resource_type="auth",
+            description=f"用户登录失败: {login_data.username}",
+            details={"username": login_data.username},
+            ip_address=ip_address,
+            user_agent=user_agent,
+            status="failed",
+            error_message="用户名或密码错误"
+        )
         raise InvalidCredentialsError("用户名或密码错误")
     
     user.last_login_at = datetime.utcnow()
     await db.commit()
+    
+    await audit_service.log_action(
+        user_id=user.id,
+        username=user.username,
+        action=AuditAction.LOGIN,
+        resource_type="auth",
+        description="用户登录成功",
+        details={"username": user.username, "role": user.role},
+        ip_address=ip_address,
+        user_agent=user_agent,
+        status="success"
+    )
     
     access_token = create_access_token(
         data={"sub": str(user.id), "username": user.username, "role": user.role}
@@ -221,15 +264,44 @@ async def get_current_user_info(
 @app.post("/api/auth/change-password")
 async def change_password(
     password_data: PasswordChange,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """修改当前用户密码"""
+    audit_service = AuditService(db)
+    ip_address = get_client_ip(request)
+    user_agent = get_user_agent(request)
+    
     if not verify_password(password_data.old_password, current_user.password_hash):
+        await audit_service.log_action(
+            user_id=current_user.id,
+            username=current_user.username,
+            action=AuditAction.CHANGE_PASSWORD,
+            resource_type="user",
+            resource_id=str(current_user.id),
+            description="密码修改失败：原密码错误",
+            ip_address=ip_address,
+            user_agent=user_agent,
+            status="failed",
+            error_message="原密码错误"
+        )
         raise InvalidCredentialsError("原密码错误")
     
     current_user.password_hash = get_password_hash(password_data.new_password)
     await db.commit()
+    
+    await audit_service.log_action(
+        user_id=current_user.id,
+        username=current_user.username,
+        action=AuditAction.CHANGE_PASSWORD,
+        resource_type="user",
+        resource_id=str(current_user.id),
+        description="密码修改成功",
+        ip_address=ip_address,
+        user_agent=user_agent,
+        status="success"
+    )
     
     return {"success": True, "message": "密码修改成功"}
 
@@ -326,12 +398,30 @@ async def get_user(
 @app.post("/api/users")
 async def create_user(
     user_data: UserCreate,
+    request: Request,
     current_admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db)
 ):
     """创建新用户（管理员）"""
+    audit_service = AuditService(db)
+    ip_address = get_client_ip(request)
+    user_agent = get_user_agent(request)
+    
     existing_user = await get_user_by_username(db, user_data.username)
     if existing_user:
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.CREATE_USER,
+            resource_type="user",
+            resource_id=user_data.username,
+            description=f"创建用户失败：用户名已存在 {user_data.username}",
+            details={"username": user_data.username},
+            ip_address=ip_address,
+            user_agent=user_agent,
+            status="failed",
+            error_message=f"用户名已存在: {user_data.username}"
+        )
         raise UserAlreadyExistsError(f"用户名已存在: {user_data.username}")
     
     hashed_password = get_password_hash(user_data.password)
@@ -345,6 +435,19 @@ async def create_user(
     db.add(new_user)
     await db.commit()
     await db.refresh(new_user)
+    
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.CREATE_USER,
+        resource_type="user",
+        resource_id=str(new_user.id),
+        description=f"创建用户: {new_user.username}",
+        details={"username": new_user.username, "role": new_user.role, "new_user_id": new_user.id},
+        ip_address=ip_address,
+        user_agent=user_agent,
+        status="success"
+    )
     
     user_response = UserResponse(
         id=new_user.id,
@@ -1719,6 +1822,172 @@ async def websocket_log_stream(
         await websocket.close(code=1011)
     
     app_logger.info(f"[WebSocket] 连接已关闭: container_id={container_id}")
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def get_user_agent(request: Request) -> str:
+    return request.headers.get("User-Agent", "")
+
+
+@app.get("/api/audit/logs")
+async def list_audit_logs(
+    user_id: Optional[int] = Query(None, description="按用户ID筛选"),
+    action: Optional[str] = Query(None, description="按操作类型筛选"),
+    status: Optional[str] = Query(None, description="按状态筛选"),
+    start_date: Optional[str] = Query(None, description="开始日期，格式：YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="结束日期，格式：YYYY-MM-DD"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取审计日志列表（管理员）"""
+    audit_service = AuditService(db)
+    
+    start_dt = None
+    end_dt = None
+    
+    if start_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="开始日期格式错误，应为 YYYY-MM-DD")
+    
+    if end_date:
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="结束日期格式错误，应为 YYYY-MM-DD")
+    
+    result = await audit_service.get_audit_logs(
+        user_id=user_id,
+        action=action,
+        status=status,
+        start_date=start_dt,
+        end_date=end_dt,
+        page=page,
+        page_size=page_size
+    )
+    
+    log_responses = [
+        AuditLogResponse(
+            id=log.id,
+            user_id=log.user_id,
+            username=log.username,
+            action=log.action,
+            resource_type=log.resource_type,
+            resource_id=log.resource_id,
+            description=log.description,
+            details=log.details,
+            ip_address=log.ip_address,
+            user_agent=log.user_agent,
+            status=log.status,
+            error_message=log.error_message,
+            created_at=log.created_at
+        )
+        for log in result["data"]
+    ]
+    
+    return {
+        "success": True,
+        "data": log_responses,
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_pages": result["total_pages"]
+    }
+
+
+@app.get("/api/audit/retention")
+async def get_audit_log_retention(
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取审计日志保留天数设置（管理员）"""
+    audit_service = AuditService(db)
+    retention_days = await audit_service.get_retention_days()
+    
+    return {
+        "success": True,
+        "data": {
+            "retention_days": retention_days,
+            "default_retention_days": SystemSetting.get_default_retention_days()
+        }
+    }
+
+
+@app.put("/api/audit/retention")
+async def update_audit_log_retention(
+    retention_data: AuditLogRetentionUpdate,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """更新审计日志保留天数设置（管理员）"""
+    audit_service = AuditService(db)
+    
+    await audit_service.set_retention_days(retention_data.retention_days)
+    
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.UPDATE_SETTINGS,
+        resource_type="system_setting",
+        resource_id="audit_log_retention_days",
+        description=f"更新审计日志保留天数为 {retention_data.retention_days} 天",
+        details={"retention_days": retention_data.retention_days},
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "message": f"审计日志保留天数已更新为 {retention_data.retention_days} 天",
+        "data": {
+            "retention_days": retention_data.retention_days
+        }
+    }
+
+
+@app.post("/api/audit/cleanup")
+async def manual_cleanup_audit_logs(
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """手动触发过期审计日志清理（管理员）"""
+    audit_service = AuditService(db)
+    
+    retention_days = await audit_service.get_retention_days()
+    deleted_count = await audit_service.cleanup_expired_logs()
+    
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.OTHER,
+        resource_type="audit_log",
+        description="手动触发过期审计日志清理",
+        details={"retention_days": retention_days, "deleted_count": deleted_count},
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "message": f"清理完成，删除了 {deleted_count} 条过期日志（保留 {retention_days} 天）",
+        "data": {
+            "deleted_count": deleted_count,
+            "retention_days": retention_days
+        }
+    }
 
 
 if __name__ == "__main__":

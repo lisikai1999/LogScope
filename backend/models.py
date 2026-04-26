@@ -1,6 +1,6 @@
-from datetime import datetime
-from typing import Optional, List
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from enum import Enum as PyEnum
@@ -13,6 +13,73 @@ Base = declarative_base()
 class UserRole(str, PyEnum):
     ADMIN = "admin"
     USER = "user"
+
+
+class AuditAction(str, PyEnum):
+    LOGIN = "login"
+    LOGOUT = "logout"
+    CHANGE_PASSWORD = "change_password"
+    CREATE_USER = "create_user"
+    UPDATE_USER = "update_user"
+    DELETE_USER = "delete_user"
+    CREATE_PERMISSION = "create_permission"
+    UPDATE_PERMISSION = "update_permission"
+    DELETE_PERMISSION = "delete_permission"
+    LIST_CONTAINERS = "list_containers"
+    VIEW_CONTAINER_INFO = "view_container_info"
+    VIEW_CONTAINER_LOGS = "view_container_logs"
+    EXPORT_LOGS = "export_logs"
+    START_CONTAINER = "start_container"
+    STOP_CONTAINER = "stop_container"
+    RESTART_CONTAINER = "restart_container"
+    DELETE_CONTAINER = "delete_container"
+    BATCH_START_CONTAINERS = "batch_start_containers"
+    BATCH_STOP_CONTAINERS = "batch_stop_containers"
+    BATCH_DELETE_CONTAINERS = "batch_delete_containers"
+    VIEW_STATS = "view_stats"
+    VIEW_IMAGE_LAYERS = "view_image_layers"
+    UPDATE_SETTINGS = "update_settings"
+    VIEW_AUDIT_LOGS = "view_audit_logs"
+    OTHER = "other"
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    username = Column(String(50), nullable=True, index=True)
+    action = Column(String(50), nullable=False, index=True)
+    resource_type = Column(String(50), nullable=True)
+    resource_id = Column(String(255), nullable=True)
+    description = Column(Text, nullable=True)
+    details = Column(JSON, nullable=True)
+    ip_address = Column(String(50), nullable=True)
+    user_agent = Column(String(255), nullable=True)
+    status = Column(String(20), default="success", nullable=False)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User", backref="audit_logs")
+
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, index=True, nullable=False)
+    value = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @classmethod
+    def get_default_retention_days(cls) -> int:
+        return 90
+
+    @classmethod
+    def get_audit_log_retention_key(cls) -> str:
+        return "audit_log_retention_days"
 
 
 class ContainerPermission(str, PyEnum):
