@@ -5,6 +5,7 @@ import MultiLogViewer from '../views/MultiLogViewer.vue'
 import Dashboard from '../views/Dashboard.vue'
 import Login from '../views/Login.vue'
 import UserManagement from '../views/UserManagement.vue'
+import AuditLog from '../views/AuditLog.vue'
 
 
 const routes = [
@@ -30,6 +31,12 @@ const routes = [
     path: '/users',
     name: 'UserManagement',
     component: UserManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/audit-logs',
+    name: 'AuditLog',
+    component: AuditLog,
     meta: { requiresAuth: true, requiresAdmin: true }
   },
   {

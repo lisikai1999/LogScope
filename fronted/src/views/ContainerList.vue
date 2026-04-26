@@ -27,6 +27,13 @@
             >
               用户管理
             </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/audit-logs" 
+              class="btn btn-outline"
+            >
+              操作审计日志
+            </router-link>
             <button class="btn btn-outline" @click="fetchContainers">
               刷新
             </button>
