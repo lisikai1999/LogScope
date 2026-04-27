@@ -155,3 +155,18 @@ class UserContainerNamePatternPermission(Base):
 
     def matches(self, container_name: str) -> bool:
         return fnmatch.fnmatch(container_name, self.name_pattern)
+
+
+class DockerHost(Base):
+    __tablename__ = "docker_hosts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True, nullable=False)
+    host = Column(String(255), nullable=False, comment="Docker 主机地址，如 unix:///var/run/docker.sock 或 tcp://192.168.1.100:2375")
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def get_display_name(self) -> str:
+        return self.name

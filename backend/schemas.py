@@ -168,3 +168,58 @@ class SystemSettingResponse(BaseModel):
 
 class AuditLogRetentionUpdate(BaseModel):
     retention_days: int = Field(..., ge=1, le=3650, description="日志保留天数，1-3650天")
+
+
+class DockerHostBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="主机名称")
+    host: str = Field(..., min_length=1, max_length=255, description="Docker 主机地址，如 unix:///var/run/docker.sock 或 tcp://192.168.1.100:2375")
+    description: Optional[str] = Field(None, description="主机描述")
+    is_active: bool = Field(True, description="是否启用")
+
+
+class DockerHostCreate(DockerHostBase):
+    pass
+
+
+class DockerHostUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    host: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class DockerHostResponse(BaseModel):
+    id: int
+    name: str
+    host: str
+    description: Optional[str]
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+class DockerHostStatus(BaseModel):
+    host_id: int
+    host_name: str
+    connected: bool
+    error_message: Optional[str] = None
+    container_count: int = 0
+    running_count: int = 0
+    stopped_count: int = 0
+    cpu_usage: Optional[float] = None
+    memory_usage: Optional[float] = None
+    memory_total: Optional[int] = None
+
+
+class ContainerWithHost(BaseModel):
+    id: str
+    names: List[str]
+    image: str
+    state: str
+    status: str
+    created: int
+    host_id: int
+    host_name: str

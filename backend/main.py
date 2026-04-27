@@ -17,6 +17,7 @@ from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 
 from docker_service import docker_service
+from multi_docker_service import multi_docker_service
 from logger import app_logger
 from config import settings
 from database import get_db, async_session_maker, init_db
@@ -27,7 +28,8 @@ from models import (
     UserRole, 
     ContainerPermission,
     AuditAction,
-    SystemSetting
+    SystemSetting,
+    DockerHost
 )
 from schemas import (
     UserLogin, Token, UserCreate, UserUpdate, UserResponse, 
@@ -39,7 +41,12 @@ from schemas import (
     NamePatternPermissionInfo,
     AuditLogResponse,
     SystemSettingResponse,
-    AuditLogRetentionUpdate
+    AuditLogRetentionUpdate,
+    DockerHostCreate,
+    DockerHostUpdate,
+    DockerHostResponse,
+    DockerHostStatus,
+    ContainerWithHost
 )
 from audit_service import (
     AuditService,
@@ -1984,6 +1991,480 @@ async def manual_cleanup_audit_logs(
             "retention_days": retention_days
         }
     }
+
+
+@app.get("/api/hosts")
+async def list_docker_hosts(
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取 Docker 主机列表（管理员）"""
+    result = await db.execute(select(DockerHost).order_by(DockerHost.created_at.desc()))
+    hosts = result.scalars().all()
+    
+    host_responses = [
+        DockerHostResponse(
+            id=host.id,
+            name=host.name,
+            host=host.host,
+            description=host.description,
+            is_active=host.is_active,
+            created_at=host.created_at,
+            updated_at=host.updated_at
+        )
+        for host in hosts
+    ]
+    
+    return {
+        "success": True,
+        "data": host_responses,
+        "total": len(host_responses)
+    }
+
+
+@app.get("/api/hosts/{host_id}")
+async def get_docker_host(
+    host_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取单个 Docker 主机详情（管理员）"""
+    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
+    host = result.scalar_one_or_none()
+    
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    
+    return {
+        "success": True,
+        "data": DockerHostResponse(
+            id=host.id,
+            name=host.name,
+            host=host.host,
+            description=host.description,
+            is_active=host.is_active,
+            created_at=host.created_at,
+            updated_at=host.updated_at
+        )
+    }
+
+
+@app.post("/api/hosts")
+async def create_docker_host(
+    host_data: DockerHostCreate,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """创建新的 Docker 主机（管理员）"""
+    result = await db.execute(select(DockerHost).where(DockerHost.name == host_data.name))
+    existing_host = result.scalar_one_or_none()
+    
+    if existing_host:
+        raise HTTPException(status_code=400, detail="主机名称已存在")
+    
+    new_host = DockerHost(
+        name=host_data.name,
+        host=host_data.host,
+        description=host_data.description,
+        is_active=host_data.is_active
+    )
+    
+    db.add(new_host)
+    await db.commit()
+    await db.refresh(new_host)
+    
+    if new_host.is_active:
+        multi_docker_service.add_host(new_host.id, new_host.name, new_host.host)
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.OTHER,
+        resource_type="docker_host",
+        resource_id=str(new_host.id),
+        description=f"创建 Docker 主机: {new_host.name}",
+        details={
+            "host_id": new_host.id,
+            "host_name": new_host.name,
+            "host_url": new_host.host
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "message": "主机创建成功",
+        "data": DockerHostResponse(
+            id=new_host.id,
+            name=new_host.name,
+            host=new_host.host,
+            description=new_host.description,
+            is_active=new_host.is_active,
+            created_at=new_host.created_at,
+            updated_at=new_host.updated_at
+        )
+    }
+
+
+@app.put("/api/hosts/{host_id}")
+async def update_docker_host(
+    host_id: int,
+    host_data: DockerHostUpdate,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """更新 Docker 主机（管理员）"""
+    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
+    host = result.scalar_one_or_none()
+    
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    
+    if host_data.name is not None and host_data.name != host.name:
+        name_result = await db.execute(select(DockerHost).where(DockerHost.name == host_data.name))
+        existing_host = name_result.scalar_one_or_none()
+        if existing_host:
+            raise HTTPException(status_code=400, detail="主机名称已存在")
+    
+    old_name = host.name
+    old_url = host.host
+    old_active = host.is_active
+    
+    if host_data.name is not None:
+        host.name = host_data.name
+    if host_data.host is not None:
+        host.host = host_data.host
+    if host_data.description is not None:
+        host.description = host_data.description
+    if host_data.is_active is not None:
+        host.is_active = host_data.is_active
+    
+    await db.commit()
+    await db.refresh(host)
+    
+    if host_data.is_active is not None or host_data.host is not None or host_data.name is not None:
+        multi_docker_service.remove_host(host_id)
+        if host.is_active:
+            multi_docker_service.add_host(host.id, host.name, host.host)
+    
+    audit_service = AuditService(db)
+    changes = {}
+    if host_data.name is not None:
+        changes["name"] = {"old": old_name, "new": host.name}
+    if host_data.host is not None:
+        changes["host"] = {"old": old_url, "new": host.host}
+    if host_data.is_active is not None:
+        changes["is_active"] = {"old": old_active, "new": host.is_active}
+    if host_data.description is not None:
+        changes["description"] = {"old": old_name, "new": host.description}
+    
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.OTHER,
+        resource_type="docker_host",
+        resource_id=str(host.id),
+        description=f"更新 Docker 主机: {host.name}",
+        details={
+            "host_id": host.id,
+            "host_name": host.name,
+            "changes": changes
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "message": "主机更新成功",
+        "data": DockerHostResponse(
+            id=host.id,
+            name=host.name,
+            host=host.host,
+            description=host.description,
+            is_active=host.is_active,
+            created_at=host.created_at,
+            updated_at=host.updated_at
+        )
+    }
+
+
+@app.delete("/api/hosts/{host_id}")
+async def delete_docker_host(
+    host_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除 Docker 主机（管理员）"""
+    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
+    host = result.scalar_one_or_none()
+    
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    
+    host_name = host.name
+    host_url = host.host
+    
+    await db.delete(host)
+    await db.commit()
+    
+    multi_docker_service.remove_host(host_id)
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.OTHER,
+        resource_type="docker_host",
+        resource_id=str(host_id),
+        description=f"删除 Docker 主机: {host_name}",
+        details={
+            "host_id": host_id,
+            "host_name": host_name,
+            "host_url": host_url
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "message": f"主机 {host_name} 删除成功"
+    }
+
+
+@app.post("/api/hosts/{host_id}/test")
+async def test_docker_host_connection(
+    host_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """测试 Docker 主机连接（管理员）"""
+    if host_id == 0:
+        client = multi_docker_service.get_host_client(0)
+        if client:
+            connected = client.is_connected()
+            return {
+                "success": connected,
+                "connected": connected,
+                "message": "本地 Docker 连接成功" if connected else "本地 Docker 连接失败",
+                "error": client.last_connect_error if not connected else None
+            }
+        else:
+            return {
+                "success": False,
+                "connected": False,
+                "message": "无法初始化本地 Docker 客户端"
+            }
+    
+    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
+    host = result.scalar_one_or_none()
+    
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    
+    client = multi_docker_service.get_host_client(host_id)
+    
+    if not client:
+        client = multi_docker_service.add_host(host.id, host.name, host.host)
+        if not client:
+            return {
+                "success": False,
+                "connected": False,
+                "message": f"无法连接到主机: {host.name}",
+                "error": multi_docker_service.get_host_client(host_id).last_connect_error if multi_docker_service.get_host_client(host_id) else "Unknown error"
+            }
+    
+    connected = client.is_connected()
+    
+    return {
+        "success": connected,
+        "connected": connected,
+        "message": f"主机 {host.name} 连接成功" if connected else f"主机 {host.name} 连接失败",
+        "error": client.last_connect_error if not connected else None
+    }
+
+
+@app.get("/api/hosts/status")
+async def get_all_hosts_status(
+    current_user: User = Depends(get_current_user)
+):
+    """获取所有 Docker 主机的状态信息"""
+    statuses = multi_docker_service.get_host_statuses()
+    
+    return {
+        "success": True,
+        "data": statuses,
+        "total": len(statuses)
+    }
+
+
+@app.get("/api/hosts/containers")
+async def get_all_hosts_containers(
+    all_containers: bool = Query(False, description="是否显示所有容器（包括停止的）"),
+    host_ids: Optional[str] = Query(None, description="按主机ID筛选，多个ID用逗号分隔"),
+    current_user: User = Depends(get_current_user)
+):
+    """获取所有主机的容器列表，支持按主机筛选"""
+    filtered_host_ids = None
+    if host_ids:
+        try:
+            filtered_host_ids = [int(hid.strip()) for hid in host_ids.split(",") if hid.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="host_ids 参数格式错误")
+    
+    containers = multi_docker_service.get_all_containers(
+        all_containers=all_containers,
+        host_ids=filtered_host_ids
+    )
+    
+    return {
+        "success": True,
+        "data": containers,
+        "total": len(containers)
+    }
+
+
+class BatchOperationItem(BaseModel):
+    container_id: str
+    host_id: Optional[int] = None
+
+
+class BatchOperationRequest(BaseModel):
+    containers: List[BatchOperationItem]
+
+
+@app.post("/api/hosts/containers/batch/start")
+async def batch_start_containers(
+    request: Request,
+    batch_request: BatchOperationRequest,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """跨主机批量启动容器（管理员）"""
+    if not batch_request.containers:
+        raise HTTPException(status_code=400, detail="没有指定要操作的容器")
+    
+    containers_with_hosts = [
+        {"container_id": item.container_id, "host_id": item.host_id}
+        for item in batch_request.containers
+    ]
+    
+    result = multi_docker_service.start_containers_batch(containers_with_hosts)
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.BATCH_START_CONTAINERS,
+        resource_type="container",
+        resource_id=str([c.get('container_id') for c in containers_with_hosts]),
+        description=f"批量启动 {len(containers_with_hosts)} 个容器",
+        details={
+            "total": result["total"],
+            "started_count": result["started_count"],
+            "failed_count": result["failed_count"],
+            "started": result["started"],
+            "failed": result["failed"]
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success" if result["success"] else "partial_success"
+    )
+    
+    return result
+
+
+@app.post("/api/hosts/containers/batch/stop")
+async def batch_stop_containers(
+    request: Request,
+    batch_request: BatchOperationRequest,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """跨主机批量停止容器（管理员）"""
+    if not batch_request.containers:
+        raise HTTPException(status_code=400, detail="没有指定要操作的容器")
+    
+    containers_with_hosts = [
+        {"container_id": item.container_id, "host_id": item.host_id}
+        for item in batch_request.containers
+    ]
+    
+    result = multi_docker_service.stop_containers_batch(containers_with_hosts)
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.BATCH_STOP_CONTAINERS,
+        resource_type="container",
+        resource_id=str([c.get('container_id') for c in containers_with_hosts]),
+        description=f"批量停止 {len(containers_with_hosts)} 个容器",
+        details={
+            "total": result["total"],
+            "stopped_count": result["stopped_count"],
+            "failed_count": result["failed_count"],
+            "stopped": result["stopped"],
+            "failed": result["failed"]
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success" if result["success"] else "partial_success"
+    )
+    
+    return result
+
+
+@app.post("/api/hosts/containers/batch/delete")
+async def batch_delete_containers(
+    request: Request,
+    batch_request: BatchOperationRequest,
+    force: bool = Query(False, description="是否强制删除"),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """跨主机批量删除容器（管理员）"""
+    if not batch_request.containers:
+        raise HTTPException(status_code=400, detail="没有指定要操作的容器")
+    
+    containers_with_hosts = [
+        {"container_id": item.container_id, "host_id": item.host_id}
+        for item in batch_request.containers
+    ]
+    
+    result = multi_docker_service.delete_containers_batch(containers_with_hosts, force=force)
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_admin.id,
+        username=current_admin.username,
+        action=AuditAction.BATCH_DELETE_CONTAINERS,
+        resource_type="container",
+        resource_id=str([c.get('container_id') for c in containers_with_hosts]),
+        description=f"批量删除 {len(containers_with_hosts)} 个容器 (force={force})",
+        details={
+            "total": result["total"],
+            "deleted_count": result["deleted_count"],
+            "failed_count": result["failed_count"],
+            "deleted": result["deleted"],
+            "failed": result["failed"],
+            "force": force
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success" if result["success"] else "partial_success"
+    )
+    
+    return result
 
 
 if __name__ == "__main__":

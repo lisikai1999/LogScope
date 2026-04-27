@@ -6,6 +6,7 @@ import Dashboard from '../views/Dashboard.vue'
 import Login from '../views/Login.vue'
 import UserManagement from '../views/UserManagement.vue'
 import AuditLog from '../views/AuditLog.vue'
+import HostManagement from '../views/HostManagement.vue'
 
 
 const routes = [
@@ -50,6 +51,12 @@ const routes = [
     name: 'MultiLogViewer',
     component: MultiLogViewer,
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/hosts',
+    name: 'HostManagement',
+    component: HostManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]
 

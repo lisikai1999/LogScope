@@ -74,6 +74,17 @@
               />
             </div>
             <div class="filters">
+              <div class="host-filter">
+                <select
+                  v-model="selectedHostId"
+                  class="input select-input"
+                >
+                  <option :value="null">所有主机</option>
+                  <option v-for="host in hostOptions" :key="host.value" :value="host.value">
+                    {{ host.label }}
+                  </option>
+                </select>
+              </div>
               <label class="checkbox-label">
                 <input
                   type="checkbox"
@@ -95,9 +106,9 @@
           </div>
 
           <!-- Batch Actions Bar -->
-          <div v-if="selectedContainerIds.length > 0" class="batch-actions-bar">
+          <div v-if="selectedContainersWithHosts.length > 0" class="batch-actions-bar">
             <div class="batch-actions-info">
-              <span>已选择 <strong>{{ selectedContainerIds.length }}</strong> 个容器</span>
+              <span>已选择 <strong>{{ selectedContainersWithHosts.length }}</strong> 个容器</span>
             </div>
             <div class="batch-actions-buttons">
               <button
@@ -153,6 +164,7 @@
                     </label>
                   </th>
                   <th>状态</th>
+                  <th>主机</th>
                   <th>名称</th>
                   <th>镜像</th>
                   <th>ID</th>
@@ -163,24 +175,24 @@
               </thead>
               <tbody>
                 <tr v-if="total === 0">
-                  <td colspan="8" class="empty-state">
+                  <td colspan="9" class="empty-state">
                     {{ searchQuery ? '没有找到匹配的容器' : '暂无容器' }}
                   </td>
                 </tr>
                 <tr 
                   v-for="(container, index) in containers" 
-                  :key="container.id"
+                  :key="container.id + '-' + container.host_id"
                   :class="{ 
                     'row-selected': selectedIndex === index,
-                    'row-checkbox-selected': isContainerSelected(container.id)
+                    'row-checkbox-selected': isContainerSelected(container.id, container.host_id)
                   }"
                 >
                   <td>
                     <label class="checkbox-label">
                       <input
                         type="checkbox"
-                        :checked="isContainerSelected(container.id)"
-                        @change="toggleContainerSelection(container.id)"
+                        :checked="isContainerSelected(container.id, container.host_id)"
+                        @change="toggleContainerSelection(container.id, container.host_id)"
                       />
                     </label>
                   </td>
@@ -189,6 +201,9 @@
                       class="status-dot"
                       :class="getStatusClass(container.state)"
                     ></div>
+                  </td>
+                  <td class="text-muted" :title="container.host_name || '未知主机'">
+                    {{ container.host_name || (container.host_id === 0 ? '本地主机' : `主机 ${container.host_id}`) }}
                   </td>
                   <td class="font-medium">
                     {{ getContainerName(container.names) }}
@@ -743,17 +758,20 @@
           <p class="delete-warning">
             确定要{{ batchOperationType === 'start' ? '启动' : 
                        batchOperationType === 'stop' ? '停止' : '删除' }} 
-            <strong>{{ selectedContainerIds.length }}</strong> 个容器吗？
+            <strong>{{ selectedContainersWithHosts.length }}</strong> 个容器吗？
           </p>
           <p class="delete-info">
-            此操作将影响以下容器：
+            此操作将影响以下容器（按主机分组）：
           </p>
           <div class="selected-containers-list">
             <div 
               v-for="container in selectedContainersForBatch" 
-              :key="container.id"
+              :key="container.id + '-' + container.host_id"
               class="selected-container-item"
             >
+              <div class="container-host">
+                <span class="host-label">{{ container.host_name || (container.host_id === 0 ? '本地主机' : `主机 ${container.host_id}`) }}</span>
+              </div>
               <span class="container-name">{{ getContainerName(container.names) }}</span>
               <span class="container-status">
                 <span
@@ -841,6 +859,7 @@ import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
 import { useAuth } from '../composables/useAuth'
+import { hostApi } from '../api/containerApi'
 
 const router = useRouter()
 const { register } = useKeyboardShortcuts('container-list')
@@ -878,6 +897,10 @@ const toastMessage = ref('')
 const toastType = ref('success')
 let toastTimeout = null
 
+const hosts = ref([])
+const selectedHostId = ref(null)
+const selectedContainersWithHosts = ref([])
+
 const selectedContainerIds = ref([])
 const batchOperationInProgress = ref(false)
 const showBatchConfirmModal = ref(false)
@@ -886,47 +909,82 @@ const batchForceDelete = ref(false)
 const showBatchResultModal = ref(false)
 const batchResult = ref(null)
 
+const hostOptions = computed(() => {
+  const options = [
+    { id: null, name: '全部主机' }
+  ]
+  for (const host of hosts.value) {
+    options.push({ id: host.id, name: host.name })
+  }
+  return options
+})
+
 const isAllSelected = computed(() => {
   if (containers.value.length === 0) return false
-  return containers.value.every(container => selectedContainerIds.value.includes(container.id))
+  return containers.value.every(container => 
+    selectedContainersWithHosts.value.some(
+      item => item.container_id === container.id && item.host_id === container.host_id
+    )
+  )
 })
 
 const isIndeterminate = computed(() => {
   if (containers.value.length === 0) return false
-  const selectedCount = containers.value.filter(container => selectedContainerIds.value.includes(container.id)).length
+  const selectedCount = containers.value.filter(container => 
+    selectedContainersWithHosts.value.some(
+      item => item.container_id === container.id && item.host_id === container.host_id
+    )
+  ).length
   return selectedCount > 0 && selectedCount < containers.value.length
 })
 
 const selectedContainersForBatch = computed(() => {
-  return containers.value.filter(container => selectedContainerIds.value.includes(container.id))
+  const result = []
+  for (const item of selectedContainersWithHosts.value) {
+    const container = containers.value.find(c => 
+      c.id === item.container_id && c.host_id === item.host_id
+    )
+    if (container) {
+      result.push(container)
+    }
+  }
+  return result
 })
 
 const hasRunningContainersInSelection = computed(() => {
   return selectedContainersForBatch.value.some(container => container.state === 'running')
 })
 
-const isContainerSelected = (containerId) => {
-  return selectedContainerIds.value.includes(containerId)
+const isContainerSelected = (containerId, hostId) => {
+  return selectedContainersWithHosts.value.some(
+    item => item.container_id === containerId && item.host_id === hostId
+  )
 }
 
-const toggleContainerSelection = (containerId) => {
-  const index = selectedContainerIds.value.indexOf(containerId)
+const toggleContainerSelection = (containerId, hostId) => {
+  const index = selectedContainersWithHosts.value.findIndex(
+    item => item.container_id === containerId && item.host_id === hostId
+  )
   if (index === -1) {
-    selectedContainerIds.value.push(containerId)
+    selectedContainersWithHosts.value.push({ container_id: containerId, host_id: hostId })
   } else {
-    selectedContainerIds.value.splice(index, 1)
+    selectedContainersWithHosts.value.splice(index, 1)
   }
 }
 
 const toggleSelectAll = () => {
   if (isAllSelected.value) {
-    selectedContainerIds.value = []
+    selectedContainersWithHosts.value = []
   } else {
-    selectedContainerIds.value = containers.value.map(container => container.id)
+    selectedContainersWithHosts.value = containers.value.map(c => ({
+      container_id: c.id,
+      host_id: c.host_id
+    }))
   }
 }
 
 const clearSelection = () => {
+  selectedContainersWithHosts.value = []
   selectedContainerIds.value = []
 }
 
@@ -964,32 +1022,30 @@ const executeBatchOperation = async () => {
   try {
     batchOperationInProgress.value = true
     
-    let endpoint = ''
-    let params = {}
+    let response
+    const containersToOperate = selectedContainersWithHosts.value.map(item => ({
+      container_id: item.container_id,
+      host_id: item.host_id
+    }))
     
     if (batchOperationType.value === 'start') {
-      endpoint = '/api/containers/batch/start'
+      response = await hostApi.batchStartContainers(containersToOperate)
     } else if (batchOperationType.value === 'stop') {
-      endpoint = '/api/containers/batch/stop'
+      response = await hostApi.batchStopContainers(containersToOperate)
     } else if (batchOperationType.value === 'delete') {
-      endpoint = '/api/containers/batch/delete'
-      if (batchForceDelete.value) {
-        params.force = true
-      }
+      response = await hostApi.batchDeleteContainers(containersToOperate, batchForceDelete.value)
     }
-    
-    const response = await axios.post(endpoint, selectedContainerIds.value, { params })
     
     closeBatchConfirmModal()
-    batchResult.value = response.data
+    batchResult.value = response
     
-    if (response.data.success) {
-      showToast(response.data.message, 'success')
+    if (response.success) {
+      showToast(response.message || '操作完成', 'success')
     } else {
-      showToast(response.data.message, 'error')
+      showToast(response.message || '操作失败', 'error')
     }
     
-    if (response.data.data?.failed_count > 0) {
+    if (response.data?.failed_count > 0) {
       showBatchResultModal.value = true
     } else {
       clearSelection()
@@ -1014,30 +1070,63 @@ const showToast = (message, type = 'success') => {
   }, 3000)
 }
 
+const fetchHosts = async () => {
+  try {
+    const response = await hostApi.getHosts()
+    if (response.success) {
+      hosts.value = response.data || []
+    }
+  } catch (err) {
+    console.error('获取主机列表失败:', err)
+  }
+}
+
 const fetchContainers = async () => {
   try {
     loading.value = true
     error.value = null
     
     const params = {
-      all_containers: showAll.value,
-      page: currentPage.value,
-      page_size: pageSize.value
+      all_containers: showAll.value
+    }
+    
+    if (selectedHostId.value !== null) {
+      params.host_ids = selectedHostId.value
     }
     
     if (searchQuery.value && searchQuery.value.trim()) {
       params.search = searchQuery.value.trim()
     }
     
-    const response = await axios.get('/api/containers', { params })
+    const response = await hostApi.getAllContainers(params)
     
-    if (response.data.success) {
-      containers.value = response.data.data
-      total.value = response.data.total
-      totalPages.value = response.data.total_pages
+    if (response.success) {
+      let allContainers = response.data || []
+      
+      if (searchQuery.value && searchQuery.value.trim()) {
+        const query = searchQuery.value.trim().toLowerCase()
+        allContainers = allContainers.filter(c => {
+          const name = (c.names?.[0] || '').toLowerCase()
+          const image = (c.image || '').toLowerCase()
+          const id = (c.id || '').toLowerCase()
+          return name.includes(query) || image.includes(query) || id.includes(query)
+        })
+      }
+      
+      total.value = allContainers.length
+      totalPages.value = Math.ceil(total.value / pageSize.value) || 1
+      
+      if (currentPage.value > totalPages.value && totalPages.value > 0) {
+        currentPage.value = totalPages.value
+      }
+      
+      const startIndex = (currentPage.value - 1) * pageSize.value
+      const endIndex = startIndex + pageSize.value
+      containers.value = allContainers.slice(startIndex, endIndex)
+      
       selectedIndex.value = -1
     } else {
-      error.value = response.data.error || '获取容器列表失败'
+      error.value = response.message || '获取容器列表失败'
     }
   } catch (err) {
     error.value = err.message || '获取容器列表失败'
@@ -1268,6 +1357,13 @@ watch(showAll, (newValue) => {
   fetchContainers()
 })
 
+watch(selectedHostId, (newValue) => {
+  console.log('[DEBUG] selectedHostId changed to:', newValue)
+  currentPage.value = 1
+  clearSelection()
+  fetchContainers()
+})
+
 let searchDebounceTimer = null
 watch(searchQuery, () => {
   if (searchDebounceTimer) {
@@ -1389,6 +1485,7 @@ const setupShortcuts = () => {
 }
 
 onMounted(() => {
+  fetchHosts()
   fetchContainers()
   setupShortcuts()
   document.addEventListener('click', closeDropdowns)
@@ -1492,6 +1589,26 @@ onUnmounted(() => {
   display: flex;
   gap: 1rem;
   align-items: center;
+}
+
+.host-filter {
+  min-width: 180px;
+}
+
+.select-input {
+  appearance: none;
+  background-color: var(--bg-primary);
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 0.5rem center;
+  background-repeat: no-repeat;
+  background-size: 1.5em 1.5em;
+  padding-right: 2.5rem;
+  cursor: pointer;
+}
+
+.select-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
 }
 
 .checkbox-label {
@@ -2206,14 +2323,27 @@ onUnmounted(() => {
 
 .selected-container-item {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 0.25rem;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border-color);
 }
 
 .selected-container-item:last-child {
   border-bottom: none;
+}
+
+.container-host {
+  display: flex;
+  align-items: center;
+}
+
+.host-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
 }
 
 .container-name {

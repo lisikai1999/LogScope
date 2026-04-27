@@ -296,6 +296,53 @@ const userManagementApi = {
 }
 
 
+const hostApi = {
+  async getHosts() {
+    return get('/api/hosts')
+  },
+  
+  async getHost(hostId) {
+    return get(`/api/hosts/${hostId}`)
+  },
+  
+  async createHost(data) {
+    return post('/api/hosts', data)
+  },
+  
+  async updateHost(hostId, data) {
+    return put(`/api/hosts/${hostId}`, data)
+  },
+  
+  async deleteHost(hostId) {
+    return del(`/api/hosts/${hostId}`)
+  },
+  
+  async testConnection(hostId) {
+    return post(`/api/hosts/${hostId}/test`)
+  },
+  
+  async getStatuses() {
+    return get('/api/hosts/status')
+  },
+  
+  async getAllContainers(params = {}) {
+    return get('/api/hosts/containers', params)
+  },
+  
+  async batchStartContainers(containersWithHosts) {
+    return post('/api/hosts/containers/batch/start', { containers: containersWithHosts })
+  },
+  
+  async batchStopContainers(containersWithHosts) {
+    return post('/api/hosts/containers/batch/stop', { containers: containersWithHosts })
+  },
+  
+  async batchDeleteContainers(containersWithHosts, force = false) {
+    return post('/api/hosts/containers/batch/delete', { containers: containersWithHosts }, { params: { force } })
+  }
+}
+
+
 export {
   globalLoading,
   getErrorMessage,
@@ -311,7 +358,8 @@ export {
   dashboardApi,
   authApi,
   auditLogApi,
-  userManagementApi
+  userManagementApi,
+  hostApi
 }
 
 export default {
@@ -327,5 +375,6 @@ export default {
   dashboardApi,
   authApi,
   auditLogApi,
-  userManagementApi
+  userManagementApi,
+  hostApi
 }
