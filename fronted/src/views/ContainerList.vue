@@ -917,9 +917,7 @@ const showBatchResultModal = ref(false)
 const batchResult = ref(null)
 
 const hostOptions = computed(() => {
-  const options = [
-    { id: null, name: '全部主机' }
-  ]
+  const options = []
   for (const host of hosts.value) {
     options.push({ id: host.id, name: host.name })
   }
@@ -1097,8 +1095,8 @@ const fetchContainers = async () => {
       all_containers: showAll.value
     }
     
-    if (selectedHostId.value !== null) {
-      params.host_ids = selectedHostId.value
+    if (selectedHostId.value !== null && selectedHostId.value !== 'null' && selectedHostId.value !== '') {
+      params.host_ids = String(selectedHostId.value)
     }
     
     if (searchQuery.value && searchQuery.value.trim()) {
