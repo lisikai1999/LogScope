@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
+from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, Body, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
