@@ -248,6 +248,187 @@ class DockerService:
         except:
             return False
     
+    def _get_image_name(self, container) -> str:
+        """
+        获取容器的镜像名称
+        
+        优先级：
+        1. 优先使用 container.image.tags 中的第一个标签
+        2. 如果没有标签，从 image ID 中提取短 ID
+        3. 如果获取失败，尝试从 container.attrs.Config.Image 中获取
+        4. 最后从 container.attrs.Image 中提取短 ID
+        5. 所有方式都失败时返回 '<unknown>'
+        """
+        image_name = '<unknown>'
+        try:
+            if container.image:
+                if container.image.tags and len(container.image.tags) > 0:
+                    image_name = container.image.tags[0]
+                    return image_name
+                else:
+                    image_id = container.attrs.get('Image', '')
+                    if image_id.startswith('sha256:'):
+                        image_name = image_id[7:19]
+                    else:
+                        image_name = image_id[:12] if image_id else '<unknown>'
+                    return image_name
+        except Exception as img_e:
+            app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
+        
+        try:
+            config_image = container.attrs.get('Config', {}).get('Image', '')
+            if config_image:
+                return config_image
+        except Exception:
+            pass
+        
+        try:
+            image_id = container.attrs.get('Image', '')
+            if image_id.startswith('sha256:'):
+                image_name = image_id[7:19]
+            else:
+                image_name = image_id[:12] if image_id else '<unknown>'
+        except Exception:
+            image_name = '<unknown>'
+        
+        return image_name
+    
+    def _parse_log_header(self, line: bytes) -> Optional[Tuple[str, int]]:
+        """
+        解析 Docker 日志头部（8字节）
+        
+        Docker 日志流格式：8字节头部 + 日志内容
+        - 第1字节：流类型（0=stdin，1=stdout，2=stderr）
+        - 第2-4字节：保留为0
+        - 第5-8字节：日志内容长度（大端序）
+        
+        返回：(流类型, 内容长度) 或 None
+        """
+        if not isinstance(line, bytes) or len(line) < 8:
+            return None
+        
+        stream_type_byte = line[0]
+        if stream_type_byte == 1:
+            stream_type = 'stdout'
+        elif stream_type_byte == 2:
+            stream_type = 'stderr'
+        else:
+            stream_type = 'stdout'
+            app_logger.debug(f"未知流类型字节: {stream_type_byte}，默认为 stdout")
+        
+        content_length = int.from_bytes(line[4:8], byteorder='big')
+        return (stream_type, content_length)
+    
+    def _parse_timestamp(self, timestamp_str: str) -> Optional[float]:
+        """
+        解析 ISO 格式时间戳
+        
+        支持格式：
+        - 2024-01-01T12:00:00Z
+        - 2024-01-01T12:00:00+00:00
+        
+        返回：Unix 时间戳（秒）或 None
+        """
+        if not timestamp_str:
+            return None
+        
+        try:
+            return datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
+        except Exception as e:
+            app_logger.debug(f"时间戳解析失败: {timestamp_str}, 错误: {e}")
+            return None
+    
+    def _decode_log_content(self, content: bytes) -> str:
+        """
+        解码日志内容字节为字符串
+        
+        优先使用 UTF-8，失败则使用 Latin-1
+        """
+        try:
+            return content.decode('utf-8').strip()
+        except UnicodeDecodeError:
+            return content.decode('latin-1').strip()
+    
+    def _parse_log_line_text(self, line: str, line_bytes: Optional[bytes] = None) -> Optional[Dict[str, Any]]:
+        """
+        解析文本格式的日志行（用于 get_container_logs）
+        
+        格式：时间戳 消息内容
+        例如：2024-01-01T12:00:00Z [INFO] Application starting
+        
+        如果提供了 line_bytes，则从字节中解析流类型
+        """
+        if not line or not line.strip():
+            return None
+        
+        line = line.strip()
+        if len(line) <= 8:
+            return None
+        
+        parts = line.split(' ', 1)
+        if len(parts) < 2:
+            return None
+        
+        timestamp_str = parts[0]
+        message = parts[1]
+        
+        timestamp = self._parse_timestamp(timestamp_str)
+        if timestamp is None:
+            return None
+        
+        stream_type = 'stdout'
+        if line_bytes is not None and len(line_bytes) >= 8:
+            header = self._parse_log_header(line_bytes)
+            if header:
+                stream_type = header[0]
+        
+        return {
+            'timestamp': int(timestamp),
+            'stream': stream_type,
+            'message': message
+        }
+    
+    def _parse_log_line_bytes(self, line: bytes) -> Optional[Dict[str, Any]]:
+        """
+        解析字节格式的日志行（用于 WebSocket 实时流）
+        
+        Docker 日志流格式：8字节头部 + 日志内容
+        """
+        if not isinstance(line, bytes) or len(line) < 8:
+            return None
+        
+        header = self._parse_log_header(line)
+        if not header:
+            return None
+        
+        stream_type, content_length = header
+        
+        if len(line) < 8 + content_length:
+            content = line[8:]
+        else:
+            content = line[8:8+content_length]
+        
+        line_str = self._decode_log_content(content)
+        if not line_str:
+            return None
+        
+        parts = line_str.split(' ', 1)
+        if len(parts) < 2:
+            return None
+        
+        timestamp_str = parts[0]
+        message = parts[1]
+        
+        timestamp = self._parse_timestamp(timestamp_str)
+        if timestamp is None:
+            return None
+        
+        return {
+            'timestamp': int(timestamp),
+            'stream': stream_type,
+            'message': message
+        }
+    
     def list_containers(
         self, 
         all_containers: bool = False,
@@ -273,29 +454,7 @@ class DockerService:
             result = []
             for container in containers:
                 try:
-                    image_name = '<unknown>'
-                    try:
-                        if container.image:
-                            if container.image.tags and len(container.image.tags) > 0:
-                                image_name = container.image.tags[0]
-                            else:
-                                image_id = container.attrs.get('Image', '')
-                                if image_id.startswith('sha256:'):
-                                    image_name = image_id[7:19]
-                                else:
-                                    image_name = image_id[:12] if image_id else '<unknown>'
-                    except Exception as img_e:
-                        app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
-                        config_image = container.attrs.get('Config', {}).get('Image', '')
-                        if config_image:
-                            image_name = config_image
-                        else:
-                            image_id = container.attrs.get('Image', '')
-                            if image_id.startswith('sha256:'):
-                                image_name = image_id[7:19]
-                            else:
-                                image_name = image_id[:12] if image_id else '<unknown>'
-                    
+                    image_name = self._get_image_name(container)
                     result.append({
                         'id': container.id,
                         'names': [name.replace('/', '') for name in [container.name]],
@@ -446,39 +605,9 @@ class DockerService:
             lines = log_string.split('\n')
             
             for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                try:
-                    if len(line) <= 8:
-                        continue
-                    
-                    content = line[0:]  
-                    
-                    parts = content.split(' ', 1)
-                    
-                    if len(parts) < 2:
-                        continue
-                    
-                    timestamp_str = parts[0]
-                    message = parts[1]
-                    try:
-                        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
-                    except:
-                        app_logger.debug(f"时间戳解析异常: {timestamp_str}")
-                        continue
-                    
-                    header = line[:8]
-                    stream_type = 'stderr' if ord(header[0]) == 1 else 'stdout'
-                    entries.append({
-                        'timestamp': int(timestamp),
-                        'stream': stream_type,
-                        'message': message
-                    })
-                except Exception as e:
-                    app_logger.error(f"Error parsing log line: {e}")
-                    continue
+                parsed = self._parse_log_line_text(line)
+                if parsed:
+                    entries.append(parsed)
             
             if search:
                 entries = log_searcher.filter_logs(entries, search)
@@ -544,87 +673,7 @@ class DockerService:
         - 第2-4字节：保留为0
         - 第5-8字节：日志内容长度（大端序）
         """
-        try:
-            app_logger.info(f"[parse_log_line] 开始解析: 输入类型={type(line)}, 长度={len(line) if isinstance(line, (bytes, str)) else 'N/A'}")
-            
-            if not isinstance(line, bytes):
-                app_logger.warning(f"[parse_log_line] 输入不是 bytes 类型: {type(line)}")
-                return None
-            
-            if len(line) < 8:
-                app_logger.warning(f"[parse_log_line] 数据长度不足8字节: {len(line)}")
-                return None
-            
-            app_logger.info(f"[parse_log_line] 原始数据 (hex): {line.hex()}")
-            app_logger.info(f"[parse_log_line] 原始数据 (raw): {line}")
-            
-            stream_type_byte = line[0]
-            app_logger.info(f"[parse_log_line] 流类型字节: {stream_type_byte} (0x{stream_type_byte:02x})")
-            
-            if stream_type_byte == 1:
-                stream_type = 'stdout'
-            elif stream_type_byte == 2:
-                stream_type = 'stderr'
-            else:
-                stream_type = 'stdout'
-                app_logger.warning(f"[parse_log_line] 未知流类型字节: {stream_type_byte}，默认为 stdout")
-            
-            content_length = int.from_bytes(line[4:8], byteorder='big')
-            app_logger.info(f"[parse_log_line] 内容长度字段: {content_length} (hex: {line[4:8].hex()})")
-            app_logger.info(f"[parse_log_line] 实际数据总长度: {len(line)}")
-            app_logger.info(f"[parse_log_line] 预期内容开始位置: 8, 预期内容结束位置: {8 + content_length}")
-            
-            if len(line) < 8 + content_length:
-                app_logger.warning(f"[parse_log_line] 数据长度不足预期: 实际={len(line)}, 预期={8 + content_length}")
-                content = line[8:]
-            else:
-                content = line[8:8+content_length]
-            
-            app_logger.info(f"[parse_log_line] 提取的内容 (长度={len(content)}): {content}")
-            
-            try:
-                line_str = content.decode('utf-8').strip()
-                app_logger.info(f"[parse_log_line] 解码后的字符串: {line_str}")
-            except UnicodeDecodeError as e:
-                app_logger.error(f"[parse_log_line] UTF-8 解码失败: {e}")
-                # 尝试使用 latin-1 解码
-                line_str = content.decode('latin-1').strip()
-                app_logger.info(f"[parse_log_line] 使用 latin-1 解码后的字符串: {line_str}")
-            
-            if not line_str:
-                app_logger.warning(f"[parse_log_line] 解码后的字符串为空")
-                return None
-            
-            parts = line_str.split(' ', 1)
-            
-            if len(parts) < 2:
-                app_logger.warning(f"[parse_log_line] 字符串格式不正确，缺少空格分隔: {line_str}")
-                return None
-            
-            timestamp_str = parts[0]
-            message = parts[1]
-            
-            app_logger.info(f"[parse_log_line] 时间戳字符串: {timestamp_str}")
-            app_logger.info(f"[parse_log_line] 消息内容: {message}")
-            
-            try:
-                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
-                app_logger.info(f"[parse_log_line] 解析后的时间戳: {timestamp}")
-            except Exception as e:
-                app_logger.error(f"[parse_log_line] 时间戳解析异常: {timestamp_str}, 错误: {e}")
-                return None
-            
-            result = {
-                'timestamp': int(timestamp),
-                'stream': stream_type,
-                'message': message
-            }
-            app_logger.info(f"[parse_log_line] 解析成功: {result}")
-            return result
-        except Exception as e:
-            app_logger.error(f"[parse_log_line] 解析过程中发生异常: {e}")
-            app_logger.error(f"[parse_log_line] 异常堆栈:\n{traceback.format_exc()}")
-            return None
+        return self._parse_log_line_bytes(line)
     
     def get_container_logs_paginated(
         self,
@@ -918,29 +967,7 @@ class DockerService:
             raise DockerServiceError(f"Docker API 错误: {str(e)}")
         
         try:
-            image_name = '<unknown>'
-            try:
-                if container.image:
-                    if container.image.tags and len(container.image.tags) > 0:
-                        image_name = container.image.tags[0]
-                    else:
-                        image_id = container.attrs.get('Image', '')
-                        if image_id.startswith('sha256:'):
-                            image_name = image_id[7:19]
-                        else:
-                            image_name = image_id[:12] if image_id else '<unknown>'
-            except Exception as img_e:
-                app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
-                config_image = container.attrs.get('Config', {}).get('Image', '')
-                if config_image:
-                    image_name = config_image
-                else:
-                    image_id = container.attrs.get('Image', '')
-                    if image_id.startswith('sha256:'):
-                        image_name = image_id[7:19]
-                    else:
-                        image_name = image_id[:12] if image_id else '<unknown>'
-            
+            image_name = self._get_image_name(container)
             return {
                 'id': container.id,
                 'names': [container.name.replace('/', '')],
@@ -1205,28 +1232,7 @@ class DockerService:
         try:
             attrs = container.attrs
             
-            image_name = '<unknown>'
-            try:
-                if container.image:
-                    if container.image.tags and len(container.image.tags) > 0:
-                        image_name = container.image.tags[0]
-                    else:
-                        image_id = attrs.get('Image', '')
-                        if image_id.startswith('sha256:'):
-                            image_name = image_id[7:19]
-                        else:
-                            image_name = image_id[:12] if image_id else '<unknown>'
-            except Exception as img_e:
-                app_logger.debug(f"Failed to get image info for container {container.id}: {img_e}")
-                config_image = attrs.get('Config', {}).get('Image', '')
-                if config_image:
-                    image_name = config_image
-                else:
-                    image_id = attrs.get('Image', '')
-                    if image_id.startswith('sha256:'):
-                        image_name = image_id[7:19]
-                    else:
-                        image_name = image_id[:12] if image_id else '<unknown>'
+            image_name = self._get_image_name(container)
             
             network_settings = attrs.get('NetworkSettings', {})
             ports = network_settings.get('Ports', {})
@@ -1564,13 +1570,7 @@ class DockerService:
                 elif op == 'write':
                     total_block_write += value
             
-            image_name = '<unknown>'
-            try:
-                if container.image:
-                    if container.image.tags and len(container.image.tags) > 0:
-                        image_name = container.image.tags[0]
-            except Exception:
-                pass
+            image_name = self._get_image_name(container)
             
             return {
                 'container_id': container_id,
@@ -1613,12 +1613,7 @@ class DockerService:
                     result.append(stats)
                 except Exception as e:
                     log_service_error("get_all_containers_stats", e, container_id=container.id[:12])
-                    image_name = '<unknown>'
-                    try:
-                        if container.image and container.image.tags:
-                            image_name = container.image.tags[0]
-                    except Exception:
-                        pass
+                    image_name = self._get_image_name(container)
                     
                     result.append({
                         'container_id': container.id,

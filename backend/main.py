@@ -101,11 +101,7 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
     """自定义异常处理器"""
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "success": False,
-            "error_code": exc.error_code,
-            "message": exc.message
-        }
+        content=exc.to_dict()
     )
 
 
