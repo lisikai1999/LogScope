@@ -1599,10 +1599,14 @@ class DockerService:
                 raise
             raise ContainerOperationError(f"获取容器统计信息失败: {str(e)}")
     
-    def get_all_containers_stats(self, all_containers: bool = False) -> List[Dict[str, Any]]:
+    def get_all_containers_stats(self, all_containers: bool = False) -> Dict[str, Any]:
         """获取所有容器的统计信息"""
         if not self.docker_available:
-            return self._get_mock_all_containers_stats(all_containers)
+            mock_list = self._get_mock_all_containers_stats(all_containers)
+            return {
+                'containers': mock_list,
+                'total': len(mock_list)
+            }
         
         try:
             containers = self.client.containers.list(all=all_containers)
@@ -1636,10 +1640,16 @@ class DockerService:
                         'block_read_bytes': 0,
                         'block_write_bytes': 0
                     })
-            return result
+            return {
+                'containers': result,
+                'total': len(result)
+            }
         except Exception as e:
             log_service_error("get_all_containers_stats", e)
-            return []
+            return {
+                'containers': [],
+                'total': 0
+            }
     
     def get_containers_runtime_stats(self, all_containers: bool = False) -> Dict[str, Any]:
         """获取容器运行时长统计"""

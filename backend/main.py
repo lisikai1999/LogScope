@@ -1277,7 +1277,7 @@ async def get_dashboard_stats(
             allowed_ids_set = set(allowed_container_ids)
             stats['containers'] = [
                 c for c in stats.get('containers', [])
-                if c.get('id') in allowed_ids_set
+                if (c.get('id') in allowed_ids_set or c.get('container_id') in allowed_ids_set)
             ]
             stats['total'] = len(stats['containers'])
         
@@ -1310,7 +1310,7 @@ async def get_dashboard_runtime(
             allowed_ids_set = set(allowed_container_ids)
             stats['containers'] = [
                 c for c in stats.get('containers', [])
-                if c.get('id') in allowed_ids_set
+                if (c.get('id') in allowed_ids_set or c.get('container_id') in allowed_ids_set)
             ]
             stats['total'] = len(stats['containers'])
         

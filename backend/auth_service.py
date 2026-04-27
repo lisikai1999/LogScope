@@ -217,13 +217,15 @@ async def get_user_allowed_containers(
     if containers is not None:
         pattern_permissions = await get_user_name_pattern_permissions(db, user)
         for container in containers:
-            container_id = container.get('id', '')
+            container_id = container.get('id', '') or container.get('container_id', '')
             container_name = None
             
             if 'names' in container and container['names']:
                 container_name = container['names'][0].replace('/', '')
             elif 'name' in container:
                 container_name = container['name'].replace('/', '')
+            elif 'container_name' in container:
+                container_name = container['container_name'].replace('/', '')
             
             if container_name:
                 for pattern_permission in pattern_permissions:
