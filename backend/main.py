@@ -2312,9 +2312,10 @@ async def get_all_hosts_status(
 async def get_all_hosts_containers(
     all_containers: bool = Query(False, description="是否显示所有容器（包括停止的）"),
     host_ids: Optional[str] = Query(None, description="按主机ID筛选，多个ID用逗号分隔"),
+    search: Optional[str] = Query(None, description="搜索关键词（容器名称、镜像、ID）"),
     current_user: User = Depends(get_current_user)
 ):
-    """获取所有主机的容器列表，支持按主机筛选"""
+    """获取所有主机的容器列表，支持按主机筛选和搜索"""
     filtered_host_ids = None
     if host_ids:
         try:
@@ -2326,6 +2327,15 @@ async def get_all_hosts_containers(
         all_containers=all_containers,
         host_ids=filtered_host_ids
     )
+    
+    if search and search.strip():
+        query = search.strip().lower()
+        containers = [
+            c for c in containers
+            if (c.get('names', [''])[0].lower().find(query) != -1 or
+                (c.get('image') or '').lower().find(query) != -1 or
+                (c.get('id') or '').lower().find(query) != -1)
+        ]
     
     return {
         "success": True,

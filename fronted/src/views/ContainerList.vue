@@ -34,6 +34,13 @@
             >
               操作审计日志
             </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/hosts" 
+              class="btn btn-outline"
+            >
+              主机管理
+            </router-link>
             <button class="btn btn-outline" @click="fetchContainers">
               刷新
             </button>
@@ -80,8 +87,8 @@
                   class="input select-input"
                 >
                   <option :value="null">所有主机</option>
-                  <option v-for="host in hostOptions" :key="host.value" :value="host.value">
-                    {{ host.label }}
+                  <option v-for="host in hostOptions" :key="host.id" :value="host.id">
+                    {{ host.name }}
                   </option>
                 </select>
               </div>
