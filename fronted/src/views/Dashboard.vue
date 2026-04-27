@@ -254,7 +254,7 @@ const fetchStats = async () => {
       params: { all_containers: showAll.value }
     })
     if (response.data.success) {
-      stats.value = response.data.data
+      stats.value = response.data.data.containers || []
     }
   } catch (err) {
     console.error('获取统计信息失败:', err)
