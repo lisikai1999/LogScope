@@ -10,12 +10,57 @@
             </svg>
             <div>
               <h1>Docker 日志查看器</h1>
-              <p>日志查看工具</p>
+              <p>容器管理</p>
             </div>
           </div>
-          <button class="btn btn-outline" @click="fetchContainers">
-            刷新
-          </button>
+          <div class="header-actions">
+            <router-link to="/dashboard" class="btn btn-outline">
+              Dashboard
+            </router-link>
+            <router-link to="/multi-logs" class="btn btn-primary">
+              多容器日志聚合
+            </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/users" 
+              class="btn btn-outline"
+            >
+              用户管理
+            </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/audit-logs" 
+              class="btn btn-outline"
+            >
+              操作审计日志
+            </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/hosts" 
+              class="btn btn-outline"
+            >
+              主机管理
+            </router-link>
+            <button class="btn btn-outline" @click="fetchContainers">
+              刷新
+            </button>
+            <div class="user-menu">
+              <span class="user-info">
+                <span class="user-avatar">{{ currentUser?.username?.charAt(0).toUpperCase() }}</span>
+                <span class="user-name">{{ currentUser?.username }}</span>
+                <span class="user-role" :class="isAdmin ? 'role-admin' : 'role-user'">
+                  {{ isAdmin ? '管理员' : '用户' }}
+                </span>
+              </span>
+              <button class="btn btn-ghost btn-sm" @click="logout" title="退出登录">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                  <polyline points="16 17 21 12 16 7"></polyline>
+                  <line x1="21" y1="12" x2="9" y2="12"></line>
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </header>
@@ -28,6 +73,7 @@
           <div class="controls">
             <div class="search-box">
               <input
+                ref="searchInputRef"
                 type="text"
                 v-model="searchQuery"
                 placeholder="搜索容器名称、镜像或 ID..."
@@ -35,6 +81,17 @@
               />
             </div>
             <div class="filters">
+              <div class="host-filter">
+                <select
+                  v-model="selectedHostId"
+                  class="input select-input"
+                >
+                  <option :value="null">所有主机</option>
+                  <option v-for="host in hostOptions" :key="host.id" :value="host.id">
+                    {{ host.name }}
+                  </option>
+                </select>
+              </div>
               <label class="checkbox-label">
                 <input
                   type="checkbox"
@@ -55,12 +112,66 @@
             <div v-for="i in 5" :key="i" class="skeleton"></div>
           </div>
 
+          <!-- Batch Actions Bar -->
+          <div v-if="selectedContainersWithHosts.length > 0" class="batch-actions-bar">
+            <div class="batch-actions-info">
+              <span>已选择 <strong>{{ selectedContainersWithHosts.length }}</strong> 个容器</span>
+            </div>
+            <div class="batch-actions-buttons">
+              <button
+                class="btn btn-success btn-sm"
+                @click="confirmBatchStart"
+                :disabled="batchOperationInProgress || !isAdmin"
+                :title="isAdmin ? '批量启动' : '只有管理员可以执行批量操作'"
+              >
+                批量启动
+                <span v-if="!isAdmin" class="btn-disabled-text">（管理员专属）</span>
+              </button>
+              <button
+                class="btn btn-warning btn-sm"
+                @click="confirmBatchStop"
+                :disabled="batchOperationInProgress || !isAdmin"
+                :title="isAdmin ? '批量停止' : '只有管理员可以执行批量操作'"
+              >
+                批量停止
+                <span v-if="!isAdmin" class="btn-disabled-text">（管理员专属）</span>
+              </button>
+              <button
+                class="btn btn-danger btn-sm"
+                @click="confirmBatchDelete"
+                :disabled="batchOperationInProgress || !isAdmin"
+                :title="isAdmin ? '批量删除' : '只有管理员可以执行批量操作'"
+              >
+                批量删除
+                <span v-if="!isAdmin" class="btn-disabled-text">（管理员专属）</span>
+              </button>
+              <button
+                class="btn btn-ghost btn-sm"
+                @click="clearSelection"
+                :disabled="batchOperationInProgress"
+              >
+                取消选择
+              </button>
+            </div>
+          </div>
+
           <!-- Container Table -->
-          <div v-else class="table-container">
+          <div class="table-container">
             <table class="table">
               <thead>
                 <tr>
+                  <th style="width: 40px;">
+                    <label class="checkbox-label">
+                      <input
+                        type="checkbox"
+                        :checked="isAllSelected"
+                        :indeterminate="isIndeterminate"
+                        @change="toggleSelectAll"
+                      />
+                    </label>
+                  </th>
                   <th>状态</th>
+                  <th>主机</th>
                   <th>名称</th>
                   <th>镜像</th>
                   <th>ID</th>
@@ -71,16 +182,35 @@
               </thead>
               <tbody>
                 <tr v-if="total === 0">
-                  <td colspan="7" class="empty-state">
+                  <td colspan="9" class="empty-state">
                     {{ searchQuery ? '没有找到匹配的容器' : '暂无容器' }}
                   </td>
                 </tr>
-                <tr v-for="container in containers" :key="container.id">
+                <tr 
+                  v-for="(container, index) in containers" 
+                  :key="container.id + '-' + container.host_id"
+                  :class="{ 
+                    'row-selected': selectedIndex === index,
+                    'row-checkbox-selected': isContainerSelected(container.id, container.host_id)
+                  }"
+                >
+                  <td>
+                    <label class="checkbox-label">
+                      <input
+                        type="checkbox"
+                        :checked="isContainerSelected(container.id, container.host_id)"
+                        @change="toggleContainerSelection(container.id, container.host_id)"
+                      />
+                    </label>
+                  </td>
                   <td>
                     <div
                       class="status-dot"
                       :class="getStatusClass(container.state)"
                     ></div>
+                  </td>
+                  <td class="text-muted" :title="container.host_name || '未知主机'">
+                    {{ container.host_name || (container.host_id === 0 ? '本地主机' : `主机 ${container.host_id}`) }}
                   </td>
                   <td class="font-medium">
                     {{ getContainerName(container.names) }}
@@ -95,14 +225,115 @@
                       {{ container.status }}
                     </span>
                   </td>
-                  <td class="text-muted">{{ container.created }}</td>
+                  <td class="text-muted">{{ formatDate(container.created) }}</td>
                   <td class="text-right">
-                    <router-link
-                      :to="`/containers/${container.id}`"
-                      class="btn btn-ghost btn-sm"
-                    >
-                      查看日志
-                    </router-link>
+                    <div class="action-buttons">
+                      <button
+                        v-if="container.state !== 'running'"
+                        class="btn btn-success btn-sm action-btn"
+                        @click="startContainer(container)"
+                        :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
+                        :title="canWriteContainer(container.id) ? '启动容器' : '无操作权限'"
+                        :class="{ 'btn-disabled': !canWriteContainer(container.id) }"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                      </button>
+                      <button
+                        v-if="container.state === 'running'"
+                        class="btn btn-warning btn-sm action-btn"
+                        @click="stopContainer(container)"
+                        :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
+                        :title="canWriteContainer(container.id) ? '停止容器' : '无操作权限'"
+                        :class="{ 'btn-disabled': !canWriteContainer(container.id) }"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <rect x="6" y="4" width="4" height="16"></rect>
+                          <rect x="14" y="4" width="4" height="16"></rect>
+                        </svg>
+                      </button>
+                      <router-link
+                        :to="`/containers/${container.id}`"
+                        class="btn btn-ghost btn-sm action-btn"
+                        title="查看日志"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                          <polyline points="14 2 14 8 20 8"></polyline>
+                          <line x1="16" y1="13" x2="8" y2="13"></line>
+                          <line x1="16" y1="17" x2="8" y2="17"></line>
+                          <polyline points="10 9 9 9 8 9"></polyline>
+                        </svg>
+                      </router-link>
+                      
+                      <div class="dropdown" :class="{ 'dropdown-open': openDropdown === container.id }">
+                        <button 
+                          class="btn btn-ghost btn-sm action-btn"
+                          @click="toggleDropdown(container.id)"
+                          title="更多操作"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="1"></circle>
+                            <circle cx="12" cy="5" r="1"></circle>
+                            <circle cx="12" cy="19" r="1"></circle>
+                          </svg>
+                        </button>
+                        <div class="dropdown-menu" v-if="openDropdown === container.id">
+                          <button 
+                            class="dropdown-item"
+                            :class="{ 'dropdown-disabled': !canWriteContainer(container.id) }"
+                            @click="canWriteContainer(container.id) ? restartContainer(container) : null"
+                            :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <polyline points="23 4 23 10 17 10"></polyline>
+                              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                            </svg>
+                            重启容器
+                            <span v-if="!canWriteContainer(container.id)" class="dropdown-disabled-text">（无权限）</span>
+                          </button>
+                          <button 
+                            class="dropdown-item"
+                            @click="viewContainerDetails(container)"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                              <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                            查看详情
+                          </button>
+                          <button 
+                            class="dropdown-item"
+                            @click="viewImageLayers(container)"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <rect x="3" y="1" width="18" height="18" rx="2" ry="2"></rect>
+                              <line x1="9" y1="9" x2="15" y2="9"></line>
+                              <line x1="9" y1="15" x2="15" y2="15"></line>
+                              <line x1="12" y1="6" x2="12" y2="18"></line>
+                            </svg>
+                            镜像层信息
+                          </button>
+                          <div class="dropdown-divider"></div>
+                          <button 
+                            class="dropdown-item dropdown-danger"
+                            :class="{ 'dropdown-disabled': !canWriteContainer(container.id) }"
+                            @click="canWriteContainer(container.id) ? confirmDeleteContainer(container) : null"
+                            :disabled="operationInProgress === container.id || !canWriteContainer(container.id)"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dropdown-icon">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                              <line x1="10" y1="11" x2="10" y2="17"></line>
+                              <line x1="14" y1="11" x2="14" y2="17"></line>
+                            </svg>
+                            删除容器
+                            <span v-if="!canWriteContainer(container.id)" class="dropdown-disabled-text">（无权限）</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -133,12 +364,514 @@
         </div>
       </div>
     </main>
+
+    <!-- Container Details Modal -->
+    <div v-if="showDetailsModal" class="modal-overlay" @click.self="closeDetailsModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3 class="modal-title">容器详情 - {{ currentContainer?.name || currentContainer?.names?.[0]?.replace(/^\//, '') || 'N/A' }}</h3>
+          <button class="modal-close" @click="closeDetailsModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body modal-scrollable">
+          <div v-if="loadingDetails" class="loading-details">
+            <div class="loading-spinner"></div>
+            <p>加载中...</p>
+          </div>
+          <div v-else-if="containerDetails">
+            <div class="details-section">
+              <h4 class="section-title">基本信息</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">容器 ID</span>
+                  <span class="detail-value font-mono">{{ containerDetails.id?.slice(0, 12) || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">名称</span>
+                  <span class="detail-value">{{ containerDetails.name }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">镜像</span>
+                  <span class="detail-value">{{ containerDetails.image }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">状态</span>
+                  <span class="detail-value">
+                    <span class="badge" :class="containerDetails.running ? 'badge-success' : 'badge-secondary'">
+                      {{ containerDetails.status }}
+                    </span>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">运行状态</span>
+                  <span class="detail-value">
+                    {{ containerDetails.running ? '运行中' : '已停止' }}
+                    <span v-if="containerDetails.paused" class="text-warning ml-2">(已暂停)</span>
+                    <span v-if="containerDetails.restarting" class="text-warning ml-2">(重启中)</span>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">退出代码</span>
+                  <span class="detail-value">{{ containerDetails.exit_code }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">创建时间</span>
+                  <span class="detail-value">{{ containerDetails.created }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">启动时间</span>
+                  <span class="detail-value">{{ containerDetails.started_at || 'N/A' }}</span>
+                </div>
+                <div v-if="containerDetails.finished_at" class="detail-item">
+                  <span class="detail-label">结束时间</span>
+                  <span class="detail-value">{{ containerDetails.finished_at }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="details-section">
+              <h4 class="section-title">配置信息</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">工作目录</span>
+                  <span class="detail-value">{{ containerDetails.working_dir || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">用户</span>
+                  <span class="detail-value">{{ containerDetails.user || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">重启策略</span>
+                  <span class="detail-value">{{ containerDetails.restart_policy || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">特权模式</span>
+                  <span class="detail-value">{{ containerDetails.privileged ? '是' : '否' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">只读根文件系统</span>
+                  <span class="detail-value">{{ containerDetails.readonly_rootfs ? '是' : '否' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="details-section">
+              <h4 class="section-title">资源限制</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">内存限制</span>
+                  <span class="detail-value">{{ formatBytes(containerDetails.memory_limit) || '无限制' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">内存预留</span>
+                  <span class="detail-value">{{ formatBytes(containerDetails.memory_reservation) || '无' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">CPU 份额</span>
+                  <span class="detail-value">{{ containerDetails.cpu_shares || '默认' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">CPU 数量</span>
+                  <span class="detail-value">{{ containerDetails.cpus || '无限制' }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.command && containerDetails.command.length > 0" class="details-section">
+              <h4 class="section-title">启动命令</h4>
+              <div class="code-block">
+                <pre>{{ containerDetails.command.join(' ') }}</pre>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.env && containerDetails.env.length > 0" class="details-section">
+              <h4 class="section-title">环境变量</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>键</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(env, idx) in containerDetails.env" :key="idx">
+                      <td class="font-mono">{{ env.key }}</td>
+                      <td class="font-mono">{{ env.value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.port_mappings && containerDetails.port_mappings.length > 0" class="details-section">
+              <h4 class="section-title">端口映射</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>容器端口</th>
+                      <th>主机 IP</th>
+                      <th>主机端口</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(port, idx) in containerDetails.port_mappings" :key="idx">
+                      <td>{{ port.container_port }}</td>
+                      <td>{{ port.host_ip || '0.0.0.0' }}</td>
+                      <td>{{ port.host_port }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.networks && containerDetails.networks.length > 0" class="details-section">
+              <h4 class="section-title">网络配置</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>网络</th>
+                      <th>IP 地址</th>
+                      <th>MAC 地址</th>
+                      <th>网关</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(net, idx) in containerDetails.networks" :key="idx">
+                      <td>{{ net.name }}</td>
+                      <td class="font-mono">{{ net.ip_address || 'N/A' }}</td>
+                      <td class="font-mono">{{ net.mac_address || 'N/A' }}</td>
+                      <td class="font-mono">{{ net.gateway || 'N/A' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.mounts && containerDetails.mounts.length > 0" class="details-section">
+              <h4 class="section-title">挂载点</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>类型</th>
+                      <th>源</th>
+                      <th>目标</th>
+                      <th>模式</th>
+                      <th>读写</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(mount, idx) in containerDetails.mounts" :key="idx">
+                      <td>{{ mount.type }}</td>
+                      <td class="font-mono">{{ mount.source }}</td>
+                      <td class="font-mono">{{ mount.destination }}</td>
+                      <td>{{ mount.mode || 'N/A' }}</td>
+                      <td>
+                        <span :class="mount.rw ? 'text-success' : 'text-muted'">
+                          {{ mount.rw ? '读写' : '只读' }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.labels && Object.keys(containerDetails.labels).length > 0" class="details-section">
+              <h4 class="section-title">标签</h4>
+              <div class="table-container">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>键</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(value, key) in containerDetails.labels" :key="key">
+                      <td class="font-mono">{{ key }}</td>
+                      <td class="font-mono">{{ value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div v-if="containerDetails.log_config" class="details-section">
+              <h4 class="section-title">日志配置</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">日志驱动</span>
+                  <span class="detail-value">{{ containerDetails.log_config.Type || 'N/A' }}</span>
+                </div>
+              </div>
+              <div v-if="containerDetails.log_config.Config && Object.keys(containerDetails.log_config.Config).length > 0" class="table-container mt-2">
+                <table class="details-table">
+                  <thead>
+                    <tr>
+                      <th>配置项</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(value, key) in containerDetails.log_config.Config" :key="key">
+                      <td class="font-mono">{{ key }}</td>
+                      <td class="font-mono">{{ value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="closeDetailsModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Image Layers Modal -->
+    <div v-if="showImageLayersModal" class="modal-overlay" @click.self="closeImageLayersModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3 class="modal-title">镜像层信息 - {{ currentContainer?.image || 'N/A' }}</h3>
+          <button class="modal-close" @click="closeImageLayersModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body modal-scrollable">
+          <div v-if="loadingImageLayers" class="loading-details">
+            <div class="loading-spinner"></div>
+            <p>加载中...</p>
+          </div>
+          <div v-else-if="imageLayersData">
+            <div class="details-section">
+              <h4 class="section-title">镜像信息</h4>
+              <div class="details-grid">
+                <div class="detail-item">
+                  <span class="detail-label">镜像 ID</span>
+                  <span class="detail-value font-mono">{{ imageLayersData.id?.slice(7, 19) || imageLayersData.id?.slice(0, 12) || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">标签</span>
+                  <span class="detail-value">{{ imageLayersData.tags?.join(', ') || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">操作系统</span>
+                  <span class="detail-value">{{ imageLayersData.os || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">架构</span>
+                  <span class="detail-value">{{ imageLayersData.architecture || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">创建时间</span>
+                  <span class="detail-value">{{ imageLayersData.created || 'N/A' }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">总大小</span>
+                  <span class="detail-value">{{ formatBytes(imageLayersData.total_size) }}</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">层数</span>
+                  <span class="detail-value">{{ imageLayersData.layer_count }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="details-section">
+              <h4 class="section-title">镜像层详情 (从底层到顶层)</h4>
+              <div v-if="imageLayersData.layers && imageLayersData.layers.length > 0" class="layers-list">
+                <div 
+                  v-for="(layer, idx) in imageLayersData.layers" 
+                  :key="idx" 
+                  class="layer-item"
+                  :class="{ 'layer-top': idx === imageLayersData.layers.length - 1 }"
+                >
+                  <div class="layer-header">
+                    <div class="layer-index">
+                      <span class="layer-number">Layer {{ idx + 1 }}</span>
+                      <span v-if="layer.tags && layer.tags.length > 0" class="layer-tag badge badge-primary">{{ layer.tags[0] }}</span>
+                    </div>
+                    <div class="layer-size">{{ formatBytes(layer.size) }}</div>
+                  </div>
+                  <div class="layer-command">
+                    <div class="code-block">
+                      <pre>{{ layer.created_by || 'N/A' }}</pre>
+                    </div>
+                  </div>
+                  <div class="layer-meta">
+                    <span class="layer-id font-mono">{{ layer.id }}</span>
+                    <span class="layer-time">{{ formatTimestamp(layer.created) }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="closeImageLayersModal">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="cancelDelete">
+      <div class="modal modal-small">
+        <div class="modal-header">
+          <h3 class="modal-title">确认删除容器</h3>
+        </div>
+        <div class="modal-body">
+          <p class="delete-warning">
+            确定要删除容器 <strong>{{ currentContainer?.names?.[0]?.replace(/^\//, '') || currentContainer?.name }}</strong> 吗？
+          </p>
+          <p class="delete-info">
+            此操作不可撤销。
+          </p>
+          <div v-if="currentContainer?.state === 'running'" class="checkbox-label mt-2">
+            <input type="checkbox" v-model="forceDelete" id="forceDelete" />
+            <label for="forceDelete">强制删除（终止并删除运行中的容器）</label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="cancelDelete">取消</button>
+          <button class="btn btn-danger" @click="executeDeleteContainer">
+            {{ operationInProgress === currentContainer?.id ? '删除中...' : '确认删除' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch Operation Confirm Modal -->
+    <div v-if="showBatchConfirmModal" class="modal-overlay" @click.self="closeBatchConfirmModal">
+      <div class="modal modal-small">
+        <div class="modal-header">
+          <h3 class="modal-title">
+            {{ batchOperationType === 'start' ? '确认批量启动' : 
+               batchOperationType === 'stop' ? '确认批量停止' : '确认批量删除' }}
+          </h3>
+        </div>
+        <div class="modal-body">
+          <p class="delete-warning">
+            确定要{{ batchOperationType === 'start' ? '启动' : 
+                       batchOperationType === 'stop' ? '停止' : '删除' }} 
+            <strong>{{ selectedContainersWithHosts.length }}</strong> 个容器吗？
+          </p>
+          <p class="delete-info">
+            此操作将影响以下容器（按主机分组）：
+          </p>
+          <div class="selected-containers-list">
+            <div 
+              v-for="container in selectedContainersForBatch" 
+              :key="container.id + '-' + container.host_id"
+              class="selected-container-item"
+            >
+              <div class="container-host">
+                <span class="host-label">{{ container.host_name || (container.host_id === 0 ? '本地主机' : `主机 ${container.host_id}`) }}</span>
+              </div>
+              <span class="container-name">{{ getContainerName(container.names) }}</span>
+              <span class="container-status">
+                <span
+                  class="badge"
+                  :class="container.state === 'running' ? 'badge-success' : 'badge-secondary'"
+                >
+                  {{ container.status }}
+                </span>
+              </span>
+            </div>
+          </div>
+          <div v-if="batchOperationType === 'delete' && hasRunningContainersInSelection" class="checkbox-label mt-2">
+            <input type="checkbox" v-model="batchForceDelete" id="batchForceDelete" />
+            <label for="batchForceDelete">强制删除（终止并删除运行中的容器）</label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-outline" @click="closeBatchConfirmModal">取消</button>
+          <button 
+            :class="['btn', batchOperationType === 'delete' ? 'btn-danger' : batchOperationType === 'stop' ? 'btn-warning' : 'btn-success']"
+            @click="executeBatchOperation"
+          >
+            {{ batchOperationInProgress ? '处理中...' : 
+               batchOperationType === 'start' ? '确认启动' : 
+               batchOperationType === 'stop' ? '确认停止' : '确认删除' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Batch Result Modal -->
+    <div v-if="showBatchResultModal" class="modal-overlay" @click.self="closeBatchResultModal">
+      <div class="modal modal-large">
+        <div class="modal-header">
+          <h3 class="modal-title">批量操作结果</h3>
+          <button class="modal-close" @click="closeBatchResultModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body modal-scrollable">
+          <div class="batch-result-summary">
+            <div class="result-item success">
+              <span class="result-label">成功</span>
+              <span class="result-count">{{ batchResult?.data?.started_count || batchResult?.data?.stopped_count || batchResult?.data?.deleted_count || 0 }}</span>
+            </div>
+            <div class="result-item failed" v-if="batchResult?.data?.failed_count > 0">
+              <span class="result-label">失败</span>
+              <span class="result-count">{{ batchResult?.data?.failed_count || 0 }}</span>
+            </div>
+          </div>
+          
+          <div v-if="batchResult?.data?.failed && batchResult.data.failed.length > 0" class="failed-list-section">
+            <h4 class="section-title">失败详情</h4>
+            <div class="failed-list">
+              <div 
+                v-for="(failed, idx) in batchResult.data.failed" 
+                :key="idx"
+                class="failed-item"
+              >
+                <div class="failed-container-id font-mono">{{ failed.container_id?.slice(0, 12) || '未知容器' }}</div>
+                <div class="failed-error">{{ failed.error }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" @click="closeBatchResultModal">确定</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div v-if="toastMessage" class="toast" :class="toastType">
+      {{ toastMessage }}
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import axios from 'axios'
+import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
+import { useAuth } from '../composables/useAuth'
+import { hostApi } from '../api/containerApi'
+
+const router = useRouter()
+const { register } = useKeyboardShortcuts('container-list')
+
+const { isAdmin, currentUser, logout, canWriteContainer } = useAuth()
 
 const containers = ref([])
 const loading = ref(true)
@@ -151,29 +884,254 @@ const pageSize = ref(20)
 const total = ref(0)
 const totalPages = ref(0)
 
+const searchInputRef = ref(null)
+const selectedIndex = ref(-1)
+
+const openDropdown = ref(null)
+const operationInProgress = ref(null)
+
+const showDetailsModal = ref(false)
+const showImageLayersModal = ref(false)
+const showDeleteConfirm = ref(false)
+const currentContainer = ref(null)
+const containerDetails = ref(null)
+const imageLayersData = ref(null)
+const loadingDetails = ref(false)
+const loadingImageLayers = ref(false)
+const forceDelete = ref(false)
+
+const toastMessage = ref('')
+const toastType = ref('success')
+let toastTimeout = null
+
+const hosts = ref([])
+const selectedHostId = ref(null)
+const selectedContainersWithHosts = ref([])
+
+const selectedContainerIds = ref([])
+const batchOperationInProgress = ref(false)
+const showBatchConfirmModal = ref(false)
+const batchOperationType = ref('')
+const batchForceDelete = ref(false)
+const showBatchResultModal = ref(false)
+const batchResult = ref(null)
+
+const hostOptions = computed(() => {
+  const options = []
+  for (const host of hosts.value) {
+    options.push({ id: host.id, name: host.name })
+  }
+  return options
+})
+
+const isAllSelected = computed(() => {
+  if (containers.value.length === 0) return false
+  return containers.value.every(container => 
+    selectedContainersWithHosts.value.some(
+      item => item.container_id === container.id && item.host_id === container.host_id
+    )
+  )
+})
+
+const isIndeterminate = computed(() => {
+  if (containers.value.length === 0) return false
+  const selectedCount = containers.value.filter(container => 
+    selectedContainersWithHosts.value.some(
+      item => item.container_id === container.id && item.host_id === container.host_id
+    )
+  ).length
+  return selectedCount > 0 && selectedCount < containers.value.length
+})
+
+const selectedContainersForBatch = computed(() => {
+  const result = []
+  for (const item of selectedContainersWithHosts.value) {
+    const container = containers.value.find(c => 
+      c.id === item.container_id && c.host_id === item.host_id
+    )
+    if (container) {
+      result.push(container)
+    }
+  }
+  return result
+})
+
+const hasRunningContainersInSelection = computed(() => {
+  return selectedContainersForBatch.value.some(container => container.state === 'running')
+})
+
+const isContainerSelected = (containerId, hostId) => {
+  return selectedContainersWithHosts.value.some(
+    item => item.container_id === containerId && item.host_id === hostId
+  )
+}
+
+const toggleContainerSelection = (containerId, hostId) => {
+  const index = selectedContainersWithHosts.value.findIndex(
+    item => item.container_id === containerId && item.host_id === hostId
+  )
+  if (index === -1) {
+    selectedContainersWithHosts.value.push({ container_id: containerId, host_id: hostId })
+  } else {
+    selectedContainersWithHosts.value.splice(index, 1)
+  }
+}
+
+const toggleSelectAll = () => {
+  if (isAllSelected.value) {
+    selectedContainersWithHosts.value = []
+  } else {
+    selectedContainersWithHosts.value = containers.value.map(c => ({
+      container_id: c.id,
+      host_id: c.host_id
+    }))
+  }
+}
+
+const clearSelection = () => {
+  selectedContainersWithHosts.value = []
+  selectedContainerIds.value = []
+}
+
+const confirmBatchStart = () => {
+  batchOperationType.value = 'start'
+  batchForceDelete.value = false
+  showBatchConfirmModal.value = true
+}
+
+const confirmBatchStop = () => {
+  batchOperationType.value = 'stop'
+  batchForceDelete.value = false
+  showBatchConfirmModal.value = true
+}
+
+const confirmBatchDelete = () => {
+  batchOperationType.value = 'delete'
+  batchForceDelete.value = hasRunningContainersInSelection.value
+  showBatchConfirmModal.value = true
+}
+
+const closeBatchConfirmModal = () => {
+  showBatchConfirmModal.value = false
+  batchOperationType.value = ''
+  batchForceDelete.value = false
+}
+
+const closeBatchResultModal = () => {
+  showBatchResultModal.value = false
+  batchResult.value = null
+  clearSelection()
+}
+
+const executeBatchOperation = async () => {
+  try {
+    batchOperationInProgress.value = true
+    
+    let response
+    const containersToOperate = selectedContainersWithHosts.value.map(item => ({
+      container_id: item.container_id,
+      host_id: item.host_id
+    }))
+    
+    if (batchOperationType.value === 'start') {
+      response = await hostApi.batchStartContainers(containersToOperate)
+    } else if (batchOperationType.value === 'stop') {
+      response = await hostApi.batchStopContainers(containersToOperate)
+    } else if (batchOperationType.value === 'delete') {
+      response = await hostApi.batchDeleteContainers(containersToOperate, batchForceDelete.value)
+    }
+    
+    closeBatchConfirmModal()
+    batchResult.value = response
+    
+    if (response.success) {
+      showToast(response.message || '操作完成', 'success')
+    } else {
+      showToast(response.message || '操作失败', 'error')
+    }
+    
+    if (response.data?.failed_count > 0) {
+      showBatchResultModal.value = true
+    } else {
+      clearSelection()
+    }
+    
+    fetchContainers()
+  } catch (err) {
+    showToast(err.message || '批量操作失败', 'error')
+  } finally {
+    batchOperationInProgress.value = false
+  }
+}
+
+const showToast = (message, type = 'success') => {
+  if (toastTimeout) {
+    clearTimeout(toastTimeout)
+  }
+  toastMessage.value = message
+  toastType.value = type
+  toastTimeout = setTimeout(() => {
+    toastMessage.value = ''
+  }, 3000)
+}
+
+const fetchHosts = async () => {
+  try {
+    const response = await hostApi.getHosts()
+    if (response.success) {
+      hosts.value = response.data || []
+    }
+  } catch (err) {
+    console.error('获取主机列表失败:', err)
+  }
+}
+
 const fetchContainers = async () => {
   try {
     loading.value = true
     error.value = null
     
     const params = {
-      all_containers: showAll.value,
-      page: currentPage.value,
-      page_size: pageSize.value
+      all_containers: showAll.value
+    }
+    
+    if (selectedHostId.value !== null && selectedHostId.value !== 'null' && selectedHostId.value !== '') {
+      params.host_ids = String(selectedHostId.value)
     }
     
     if (searchQuery.value && searchQuery.value.trim()) {
       params.search = searchQuery.value.trim()
     }
     
-    const response = await axios.get('/api/containers', { params })
+    const response = await hostApi.getAllContainers(params)
     
-    if (response.data.success) {
-      containers.value = response.data.data
-      total.value = response.data.total
-      totalPages.value = response.data.total_pages
+    if (response.success) {
+      let allContainers = response.data || []
+      
+      if (searchQuery.value && searchQuery.value.trim()) {
+        const query = searchQuery.value.trim().toLowerCase()
+        allContainers = allContainers.filter(c => {
+          const name = (c.names?.[0] || '').toLowerCase()
+          const image = (c.image || '').toLowerCase()
+          const id = (c.id || '').toLowerCase()
+          return name.includes(query) || image.includes(query) || id.includes(query)
+        })
+      }
+      
+      total.value = allContainers.length
+      totalPages.value = Math.ceil(total.value / pageSize.value) || 1
+      
+      if (currentPage.value > totalPages.value && totalPages.value > 0) {
+        currentPage.value = totalPages.value
+      }
+      
+      const startIndex = (currentPage.value - 1) * pageSize.value
+      const endIndex = startIndex + pageSize.value
+      containers.value = allContainers.slice(startIndex, endIndex)
+      
+      selectedIndex.value = -1
     } else {
-      error.value = response.data.error || '获取容器列表失败'
+      error.value = response.message || '获取容器列表失败'
     }
   } catch (err) {
     error.value = err.message || '获取容器列表失败'
@@ -188,7 +1146,23 @@ const getContainerName = (names) => {
 }
 
 const formatDate = (timestamp) => {
-  return new Date(timestamp * 1000).toLocaleString('zh-CN')
+  if (!timestamp) return 'N/A'
+  const date = new Date(timestamp)
+  return date.toLocaleString('zh-CN')
+}
+
+const formatBytes = (bytes) => {
+  if (bytes === 0 || !bytes) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+}
+
+const formatTimestamp = (timestamp) => {
+  if (!timestamp) return 'N/A'
+  const date = new Date(timestamp * 1000)
+  return date.toLocaleString('zh-CN')
 }
 
 const getStatusClass = (state) => {
@@ -220,9 +1194,178 @@ const prevPage = () => {
   }
 }
 
+const toggleDropdown = (containerId) => {
+  if (openDropdown.value === containerId) {
+    openDropdown.value = null
+  } else {
+    openDropdown.value = containerId
+  }
+}
+
+const closeDropdowns = (event) => {
+  if (openDropdown.value) {
+    const dropdown = event.target.closest('.dropdown')
+    if (!dropdown) {
+      openDropdown.value = null
+    }
+  }
+}
+
+const startContainer = async (container) => {
+  try {
+    operationInProgress.value = container.id
+    const response = await axios.post(`/api/containers/${container.id}/start`)
+    if (response.data.success) {
+      showToast('容器启动成功', 'success')
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '启动容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '启动容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+    openDropdown.value = null
+  }
+}
+
+const stopContainer = async (container) => {
+  try {
+    operationInProgress.value = container.id
+    const response = await axios.post(`/api/containers/${container.id}/stop`)
+    if (response.data.success) {
+      showToast('容器停止成功', 'success')
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '停止容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '停止容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+    openDropdown.value = null
+  }
+}
+
+const restartContainer = async (container) => {
+  try {
+    operationInProgress.value = container.id
+    const response = await axios.post(`/api/containers/${container.id}/restart`)
+    if (response.data.success) {
+      showToast('容器重启成功', 'success')
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '重启容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '重启容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+    openDropdown.value = null
+  }
+}
+
+const confirmDeleteContainer = (container) => {
+  currentContainer.value = container
+  forceDelete.value = container.state === 'running'
+  showDeleteConfirm.value = true
+  openDropdown.value = null
+}
+
+const cancelDelete = () => {
+  showDeleteConfirm.value = false
+  currentContainer.value = null
+  forceDelete.value = false
+}
+
+const executeDeleteContainer = async () => {
+  if (!currentContainer.value) return
+  
+  try {
+    operationInProgress.value = currentContainer.value.id
+    const response = await axios.post(`/api/containers/${currentContainer.value.id}/delete`, null, {
+      params: { force: forceDelete.value }
+    })
+    if (response.data.success) {
+      showToast('容器删除成功', 'success')
+      showDeleteConfirm.value = false
+      currentContainer.value = null
+      fetchContainers()
+    } else {
+      showToast(response.data.error || '删除容器失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '删除容器失败', 'error')
+  } finally {
+    operationInProgress.value = null
+  }
+}
+
+const viewContainerDetails = async (container) => {
+  currentContainer.value = container
+  openDropdown.value = null
+  showDetailsModal.value = true
+  loadingDetails.value = true
+  containerDetails.value = null
+  
+  try {
+    const response = await axios.get(`/api/containers/${container.id}/full-info`)
+    if (response.data.success) {
+      containerDetails.value = response.data.data
+    } else {
+      showToast('获取容器详情失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '获取容器详情失败', 'error')
+  } finally {
+    loadingDetails.value = false
+  }
+}
+
+const closeDetailsModal = () => {
+  showDetailsModal.value = false
+  containerDetails.value = null
+  currentContainer.value = null
+}
+
+const viewImageLayers = async (container) => {
+  currentContainer.value = container
+  openDropdown.value = null
+  showImageLayersModal.value = true
+  loadingImageLayers.value = true
+  imageLayersData.value = null
+  
+  try {
+    const imageName = container.image
+    const response = await axios.get(`/api/images/${encodeURIComponent(imageName)}/layers`)
+    if (response.data.success) {
+      imageLayersData.value = response.data.data
+    } else {
+      showToast('获取镜像层信息失败', 'error')
+    }
+  } catch (err) {
+    showToast(err.message || '获取镜像层信息失败', 'error')
+  } finally {
+    loadingImageLayers.value = false
+  }
+}
+
+const closeImageLayersModal = () => {
+  showImageLayersModal.value = false
+  imageLayersData.value = null
+  currentContainer.value = null
+}
+
 watch(showAll, (newValue) => {
   console.log('[DEBUG] showAll changed to:', newValue)
   currentPage.value = 1
+  fetchContainers()
+})
+
+watch(selectedHostId, (newValue) => {
+  console.log('[DEBUG] selectedHostId changed to:', newValue)
+  currentPage.value = 1
+  clearSelection()
   fetchContainers()
 })
 
@@ -243,8 +1386,121 @@ watch(currentPage, () => {
   }
 })
 
+const focusSearch = () => {
+  if (searchInputRef.value) {
+    searchInputRef.value.focus()
+    searchInputRef.value.select()
+  }
+}
+
+const selectUp = () => {
+  if (containers.value.length === 0) return
+  if (selectedIndex.value <= 0) {
+    if (currentPage.value > 1) {
+      prevPage()
+      nextTick(() => {
+        selectedIndex.value = containers.value.length - 1
+      })
+    } else {
+      selectedIndex.value = 0
+    }
+  } else {
+    selectedIndex.value--
+  }
+  scrollSelectedIntoView()
+}
+
+const selectDown = () => {
+  if (containers.value.length === 0) return
+  if (selectedIndex.value === -1) {
+    selectedIndex.value = 0
+  } else if (selectedIndex.value >= containers.value.length - 1) {
+    if (currentPage.value < totalPages.value) {
+      nextPage()
+      nextTick(() => {
+        selectedIndex.value = 0
+      })
+    } else {
+      selectedIndex.value = containers.value.length - 1
+    }
+  } else {
+    selectedIndex.value++
+  }
+  scrollSelectedIntoView()
+}
+
+const scrollSelectedIntoView = () => {
+  nextTick(() => {
+    const selectedRow = document.querySelector('.row-selected')
+    if (selectedRow) {
+      selectedRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  })
+}
+
+const viewSelectedLogs = () => {
+  if (selectedIndex.value >= 0 && selectedIndex.value < containers.value.length) {
+    const container = containers.value[selectedIndex.value]
+    router.push(`/containers/${container.id}`)
+  }
+}
+
+const setupShortcuts = () => {
+  register({
+    key: 'f',
+    ctrl: true,
+    description: '聚焦搜索框',
+    handler: focusSearch,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'r',
+    ctrl: true,
+    description: '刷新列表',
+    handler: fetchContainers,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'ArrowUp',
+    description: '向上选择容器',
+    handler: selectUp,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'ArrowDown',
+    description: '向下选择容器',
+    handler: selectDown,
+    allowInInput: false,
+    preventDefault: true
+  })
+  
+  register({
+    key: 'Enter',
+    description: '查看日志',
+    handler: viewSelectedLogs,
+    allowInInput: false,
+    preventDefault: true
+  })
+}
+
 onMounted(() => {
+  fetchHosts()
   fetchContainers()
+  setupShortcuts()
+  document.addEventListener('click', closeDropdowns)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeDropdowns)
+  if (toastTimeout) {
+    clearTimeout(toastTimeout)
+  }
 })
 </script>
 
@@ -282,6 +1538,12 @@ onMounted(() => {
   font-size: 0.875rem;
   color: var(--text-secondary);
   margin: 0;
+}
+
+.header-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
 }
 
 .main-content {
@@ -332,6 +1594,26 @@ onMounted(() => {
   display: flex;
   gap: 1rem;
   align-items: center;
+}
+
+.host-filter {
+  min-width: 180px;
+}
+
+.select-input {
+  appearance: none;
+  background-color: var(--bg-primary);
+  background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e");
+  background-position: right 0.5rem center;
+  background-repeat: no-repeat;
+  background-size: 1.5em 1.5em;
+  padding-right: 2.5rem;
+  cursor: pointer;
+}
+
+.select-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
 }
 
 .checkbox-label {
@@ -397,6 +1679,14 @@ onMounted(() => {
   border-bottom: none;
 }
 
+.row-selected {
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+.row-selected td {
+  border-bottom-color: var(--primary-color);
+}
+
 .status-dot {
   width: 0.5rem;
   height: 0.5rem;
@@ -455,6 +1745,11 @@ onMounted(() => {
   color: white;
 }
 
+.badge-primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -471,11 +1766,16 @@ onMounted(() => {
   transition: all 0.2s;
 }
 
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .btn-outline {
   border: 1px solid var(--border-color);
 }
 
-.btn-outline:hover {
+.btn-outline:hover:not(:disabled) {
   background-color: var(--bg-secondary);
 }
 
@@ -483,13 +1783,60 @@ onMounted(() => {
   background-color: transparent;
 }
 
-.btn-ghost:hover {
+.btn-ghost:hover:not(:disabled) {
   background-color: var(--bg-secondary);
+}
+
+.btn-primary {
+  background-color: var(--primary-color);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #2563eb;
+}
+
+.btn-success {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.btn-success:hover:not(:disabled) {
+  background-color: #059669;
+}
+
+.btn-warning {
+  background-color: var(--warning-color);
+  color: white;
+}
+
+.btn-warning:hover:not(:disabled) {
+  background-color: #d97706;
+}
+
+.btn-danger {
+  background-color: var(--error-color);
+  color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #dc2626;
 }
 
 .btn-sm {
   padding: 0.25rem 0.5rem;
   font-size: 0.75rem;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.25rem;
+  justify-content: flex-end;
+}
+
+.action-btn {
+  min-width: 28px;
+  padding: 0.25rem;
 }
 
 .empty-state {
@@ -544,5 +1891,698 @@ onMounted(() => {
   font-size: 0.875rem;
   color: var(--text-secondary);
   padding: 0 0.5rem;
+}
+
+.dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.dropdown-menu {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 0.25rem;
+  min-width: 160px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  padding: 0.25rem 0;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 1rem;
+  text-align: left;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.dropdown-item:hover:not(:disabled) {
+  background-color: var(--bg-secondary);
+}
+
+.dropdown-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dropdown-item.dropdown-danger {
+  color: var(--error-color);
+}
+
+.dropdown-item.dropdown-danger:hover:not(:disabled) {
+  background-color: rgba(239, 68, 68, 0.1);
+}
+
+.dropdown-icon {
+  flex-shrink: 0;
+}
+
+.dropdown-divider {
+  height: 1px;
+  background-color: var(--border-color);
+  margin: 0.25rem 0;
+}
+
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 1rem;
+}
+
+.modal {
+  background-color: var(--bg-primary);
+  border-radius: 0.5rem;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+  max-width: 90vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-large {
+  width: 900px;
+}
+
+.modal-small {
+  width: 400px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-close:hover {
+  color: var(--text-primary);
+}
+
+.modal-body {
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.modal-scrollable {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.loading-details {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  color: var(--text-secondary);
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border-color);
+  border-top-color: var(--primary-color);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.details-section {
+  margin-bottom: 1.5rem;
+}
+
+.details-section:last-child {
+  margin-bottom: 0;
+}
+
+.section-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 0.75rem 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.75rem;
+}
+
+.detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.detail-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.detail-value {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.code-block {
+  background-color: var(--bg-secondary);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+
+.code-block pre {
+  margin: 0;
+  font-family: 'Courier New', monospace;
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.details-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.details-table th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border-bottom: 2px solid var(--border-color);
+}
+
+.details-table td {
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.details-table tr:last-child td {
+  border-bottom: none;
+}
+
+.mt-2 {
+  margin-top: 0.5rem;
+}
+
+.text-success {
+  color: var(--success-color);
+}
+
+.text-warning {
+  color: var(--warning-color);
+}
+
+.ml-2 {
+  margin-left: 0.5rem;
+}
+
+.delete-warning {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.delete-warning strong {
+  color: var(--error-color);
+}
+
+.delete-info {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.layers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.layer-item {
+  background-color: var(--bg-secondary);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+}
+
+.layer-item.layer-top {
+  border-color: var(--primary-color);
+}
+
+.layer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.layer-index {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.layer-number {
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
+.layer-tag {
+  font-size: 0.7rem;
+}
+
+.layer-size {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.layer-command {
+  margin-bottom: 0.5rem;
+}
+
+.layer-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.layer-time {
+  text-align: right;
+}
+
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  z-index: 3000;
+  animation: slideUp 0.3s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.toast.success {
+  background-color: var(--success-color);
+  color: white;
+}
+
+.toast.error {
+  background-color: var(--error-color);
+  color: white;
+}
+
+.batch-actions-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background-color: var(--primary-color);
+  border-radius: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.batch-actions-info {
+  color: white;
+  font-weight: 500;
+}
+
+.batch-actions-info strong {
+  font-size: 1.1rem;
+}
+
+.batch-actions-buttons {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.batch-actions-buttons .btn {
+  background-color: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.batch-actions-buttons .btn:hover:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
+.batch-actions-buttons .btn:disabled {
+  opacity: 0.5;
+}
+
+.batch-actions-buttons .btn.btn-success:hover:not(:disabled) {
+  background-color: var(--success-color);
+  border-color: var(--success-color);
+}
+
+.batch-actions-buttons .btn.btn-warning:hover:not(:disabled) {
+  background-color: var(--warning-color);
+  border-color: var(--warning-color);
+}
+
+.batch-actions-buttons .btn.btn-danger:hover:not(:disabled) {
+  background-color: var(--error-color);
+  border-color: var(--error-color);
+}
+
+.row-checkbox-selected {
+  background-color: rgba(59, 130, 246, 0.05);
+}
+
+.selected-containers-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  margin-top: 0.5rem;
+  background-color: var(--bg-secondary);
+}
+
+.selected-container-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.selected-container-item:last-child {
+  border-bottom: none;
+}
+
+.container-host {
+  display: flex;
+  align-items: center;
+}
+
+.host-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+}
+
+.container-name {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.container-status {
+  margin-left: 0.5rem;
+}
+
+.batch-result-summary {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 1.5rem;
+}
+
+.result-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 1rem 2rem;
+  border-radius: 0.5rem;
+  background-color: var(--bg-secondary);
+}
+
+.result-item.success {
+  border-left: 4px solid var(--success-color);
+}
+
+.result-item.failed {
+  border-left: 4px solid var(--error-color);
+}
+
+.result-label {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.result-count {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.result-item.success .result-count {
+  color: var(--success-color);
+}
+
+.result-item.failed .result-count {
+  color: var(--error-color);
+}
+
+.failed-list-section {
+  margin-top: 1rem;
+}
+
+.failed-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.failed-item {
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.375rem;
+  margin-bottom: 0.5rem;
+  background-color: #fef2f2;
+  border-left: 3px solid var(--error-color);
+}
+
+.failed-container-id {
+  font-weight: 600;
+  color: var(--error-color);
+  margin-bottom: 0.25rem;
+}
+
+.failed-error {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+@media (max-width: 768px) {
+  .header-content {
+    flex-direction: column;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+
+  .header-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .stats-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .container-stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal {
+    max-width: 100%;
+    max-height: 95vh;
+  }
+
+  .modal-large {
+    width: 100%;
+  }
+
+  .modal-small {
+    width: 100%;
+  }
+
+  .details-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .action-buttons {
+    flex-wrap: wrap;
+  }
+
+  .batch-actions-bar {
+    flex-direction: column;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+
+  .batch-actions-buttons {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .batch-result-summary {
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .result-item {
+    width: 100%;
+  }
+  
+  .user-menu {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .user-info {
+    justify-content: flex-start;
+  }
+}
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  background-color: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.user-avatar {
+  width: 28px;
+  height: 28px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.user-name {
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.user-role {
+  font-size: 0.7rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+}
+
+.user-role.role-admin {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #d97706;
+}
+
+.user-role.role-user {
+  background-color: rgba(59, 130, 246, 0.1);
+  color: #2563eb;
+}
+
+.btn-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-disabled:hover {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-disabled-text {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  margin-left: 0.25rem;
+}
+
+.dropdown-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dropdown-disabled:hover {
+  background-color: transparent;
+  cursor: not-allowed;
+}
+
+.dropdown-disabled-text {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  margin-left: 0.5rem;
 }
 </style>
