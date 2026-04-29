@@ -1077,4 +1077,382 @@ class MultiDockerService:
         }
 
 
+import asyncio
+
+
+class AsyncDockerHostClient:
+    def __init__(self, sync_client: DockerHostClient):
+        self._sync = sync_client
+    
+    @property
+    def host_id(self) -> int:
+        return self._sync.host_id
+    
+    @property
+    def host_name(self) -> str:
+        return self._sync.host_name
+    
+    async def is_connected_async(self) -> bool:
+        return await asyncio.to_thread(self._sync.is_connected)
+    
+    async def get_connection_status_async(self) -> Dict[str, Any]:
+        return await asyncio.to_thread(self._sync.get_connection_status)
+    
+    async def get_host_stats_async(self) -> Dict[str, Any]:
+        return await asyncio.to_thread(self._sync.get_host_stats)
+    
+    async def list_containers_async(self, all_containers: bool = False) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self._sync.list_containers, all_containers)
+    
+    async def get_container_info_async(self, container_id: str) -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(self._sync.get_container_info, container_id)
+    
+    async def start_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(self._sync.start_container, container_id)
+    
+    async def stop_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(self._sync.stop_container, container_id)
+    
+    async def restart_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(self._sync.restart_container, container_id)
+    
+    async def delete_container_async(self, container_id: str, force: bool = False) -> bool:
+        return await asyncio.to_thread(self._sync.delete_container, container_id, force)
+    
+    async def get_container_logs_async(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        before: Optional[int] = None,
+        search: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._sync.get_container_logs,
+            container_id=container_id,
+            since=since,
+            until=until,
+            tail=tail,
+            limit=limit,
+            before=before,
+            search=search
+        )
+    
+    async def get_container_full_info_async(self, container_id: str) -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(self._sync.get_container_full_info, container_id)
+    
+    async def get_container_stats_async(self, container_id: str) -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(self._sync.get_container_stats, container_id)
+
+
+class AsyncMultiDockerService:
+    def __init__(self, sync_service: MultiDockerService):
+        self._sync = sync_service
+    
+    def _get_async_client(self, sync_client: DockerHostClient) -> AsyncDockerHostClient:
+        return AsyncDockerHostClient(sync_client)
+    
+    async def add_host_async(self, host_id: int, host_name: str, host_url: str) -> bool:
+        return await asyncio.to_thread(self._sync.add_host, host_id, host_name, host_url)
+    
+    async def remove_host_async(self, host_id: int) -> bool:
+        return await asyncio.to_thread(self._sync.remove_host, host_id)
+    
+    def get_host_client(self, host_id: int) -> Optional[AsyncDockerHostClient]:
+        sync_client = self._sync.get_host_client(host_id)
+        if sync_client:
+            return self._get_async_client(sync_client)
+        return None
+    
+    def get_all_host_clients(self) -> List[AsyncDockerHostClient]:
+        sync_clients = self._sync.get_all_host_clients()
+        return [self._get_async_client(c) for c in sync_clients]
+    
+    async def get_host_statuses_async(self) -> List[Dict[str, Any]]:
+        clients = self.get_all_host_clients()
+        if not clients:
+            return []
+        
+        tasks = [client.get_host_stats_async() for client in clients]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        statuses = []
+        for client, result in zip(clients, results):
+            if isinstance(result, Exception):
+                app_logger.error(f"[AsyncMultiDockerService] 获取主机 {client.host_name} 状态失败: {result}")
+                statuses.append({
+                    'host_id': client.host_id,
+                    'host_name': client.host_name,
+                    'connected': False,
+                    'error_message': str(result),
+                    'container_count': 0,
+                    'running_count': 0,
+                    'stopped_count': 0,
+                    'cpu_usage': None,
+                    'memory_usage': None,
+                    'memory_total': None
+                })
+            else:
+                statuses.append(result)
+        
+        return statuses
+    
+    async def get_all_containers_async(
+        self, 
+        all_containers: bool = False,
+        host_ids: Optional[List[int]] = None
+    ) -> List[Dict[str, Any]]:
+        clients = self.get_all_host_clients()
+        
+        if host_ids is not None:
+            clients = [c for c in clients if c.host_id in host_ids]
+        
+        if not clients:
+            return []
+        
+        tasks = [client.list_containers_async(all_containers) for client in clients]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        all_containers_list = []
+        for client, result in zip(clients, results):
+            if isinstance(result, Exception):
+                app_logger.error(f"[AsyncMultiDockerService] 获取主机 {client.host_name} 容器列表失败: {result}")
+            else:
+                all_containers_list.extend(result)
+        
+        return all_containers_list
+    
+    async def find_container_host_async(self, container_id: str) -> Optional[AsyncDockerHostClient]:
+        clients = self.get_all_host_clients()
+        
+        async def check_client(client: AsyncDockerHostClient):
+            try:
+                info = await client.get_container_info_async(container_id)
+                return (client, info is not None)
+            except Exception:
+                return (client, False)
+        
+        tasks = [check_client(client) for client in clients]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for result in results:
+            if not isinstance(result, Exception):
+                client, found = result
+                if found:
+                    return client
+        
+        return None
+    
+    async def start_containers_batch_async(
+        self, 
+        containers_with_hosts: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        started = []
+        failed = []
+        
+        async def start_single(item: Dict[str, Any]):
+            container_id = item.get('container_id')
+            host_id = item.get('host_id')
+            
+            client = self.get_host_client(host_id) if host_id is not None else None
+            if not client:
+                client = await self.find_container_host_async(container_id)
+            
+            if not client:
+                return {
+                    'container_id': container_id,
+                    'host_id': host_id,
+                    'success': False,
+                    'error': f"找不到容器所在的主机: {container_id[:12]}"
+                }
+            
+            try:
+                await client.start_container_async(container_id)
+                app_logger.info(f"[Async Batch Start] 容器 {container_id[:12]} (主机: {client.host_name}) 启动成功")
+                return {
+                    'container_id': container_id,
+                    'host_id': client.host_id,
+                    'host_name': client.host_name,
+                    'success': True
+                }
+            except Exception as e:
+                log_service_error("start_containers_batch_async", e, container_id=container_id, host_id=host_id)
+                return {
+                    'container_id': container_id,
+                    'host_id': client.host_id,
+                    'host_name': client.host_name,
+                    'success': False,
+                    'error': str(e)
+                }
+        
+        tasks = [start_single(item) for item in containers_with_hosts]
+        results = await asyncio.gather(*tasks)
+        
+        for result in results:
+            if result.get('success'):
+                started.append({
+                    'container_id': result['container_id'],
+                    'host_id': result['host_id'],
+                    'host_name': result['host_name']
+                })
+            else:
+                failed.append({
+                    'container_id': result['container_id'],
+                    'host_id': result.get('host_id'),
+                    'host_name': result.get('host_name'),
+                    'error': result.get('error')
+                })
+        
+        return {
+            'success': len(failed) == 0,
+            'started': started,
+            'failed': failed,
+            'total': len(containers_with_hosts),
+            'started_count': len(started),
+            'failed_count': len(failed)
+        }
+    
+    async def stop_containers_batch_async(
+        self, 
+        containers_with_hosts: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        stopped = []
+        failed = []
+        
+        async def stop_single(item: Dict[str, Any]):
+            container_id = item.get('container_id')
+            host_id = item.get('host_id')
+            
+            client = self.get_host_client(host_id) if host_id is not None else None
+            if not client:
+                client = await self.find_container_host_async(container_id)
+            
+            if not client:
+                return {
+                    'container_id': container_id,
+                    'host_id': host_id,
+                    'success': False,
+                    'error': f"找不到容器所在的主机: {container_id[:12]}"
+                }
+            
+            try:
+                await client.stop_container_async(container_id)
+                app_logger.info(f"[Async Batch Stop] 容器 {container_id[:12]} (主机: {client.host_name}) 停止成功")
+                return {
+                    'container_id': container_id,
+                    'host_id': client.host_id,
+                    'host_name': client.host_name,
+                    'success': True
+                }
+            except Exception as e:
+                log_service_error("stop_containers_batch_async", e, container_id=container_id, host_id=host_id)
+                return {
+                    'container_id': container_id,
+                    'host_id': client.host_id,
+                    'host_name': client.host_name,
+                    'success': False,
+                    'error': str(e)
+                }
+        
+        tasks = [stop_single(item) for item in containers_with_hosts]
+        results = await asyncio.gather(*tasks)
+        
+        for result in results:
+            if result.get('success'):
+                stopped.append({
+                    'container_id': result['container_id'],
+                    'host_id': result['host_id'],
+                    'host_name': result['host_name']
+                })
+            else:
+                failed.append({
+                    'container_id': result['container_id'],
+                    'host_id': result.get('host_id'),
+                    'host_name': result.get('host_name'),
+                    'error': result.get('error')
+                })
+        
+        return {
+            'success': len(failed) == 0,
+            'stopped': stopped,
+            'failed': failed,
+            'total': len(containers_with_hosts),
+            'stopped_count': len(stopped),
+            'failed_count': len(failed)
+        }
+    
+    async def delete_containers_batch_async(
+        self, 
+        containers_with_hosts: List[Dict[str, Any]],
+        force: bool = False
+    ) -> Dict[str, Any]:
+        deleted = []
+        failed = []
+        
+        async def delete_single(item: Dict[str, Any]):
+            container_id = item.get('container_id')
+            host_id = item.get('host_id')
+            
+            client = self.get_host_client(host_id) if host_id is not None else None
+            if not client:
+                client = await self.find_container_host_async(container_id)
+            
+            if not client:
+                return {
+                    'container_id': container_id,
+                    'host_id': host_id,
+                    'success': False,
+                    'error': f"找不到容器所在的主机: {container_id[:12]}"
+                }
+            
+            try:
+                await client.delete_container_async(container_id, force=force)
+                app_logger.info(f"[Async Batch Delete] 容器 {container_id[:12]} (主机: {client.host_name}) 删除成功")
+                return {
+                    'container_id': container_id,
+                    'host_id': client.host_id,
+                    'host_name': client.host_name,
+                    'success': True
+                }
+            except Exception as e:
+                log_service_error("delete_containers_batch_async", e, container_id=container_id, host_id=host_id, force=force)
+                return {
+                    'container_id': container_id,
+                    'host_id': client.host_id,
+                    'host_name': client.host_name,
+                    'success': False,
+                    'error': str(e)
+                }
+        
+        tasks = [delete_single(item) for item in containers_with_hosts]
+        results = await asyncio.gather(*tasks)
+        
+        for result in results:
+            if result.get('success'):
+                deleted.append({
+                    'container_id': result['container_id'],
+                    'host_id': result['host_id'],
+                    'host_name': result['host_name']
+                })
+            else:
+                failed.append({
+                    'container_id': result['container_id'],
+                    'host_id': result.get('host_id'),
+                    'host_name': result.get('host_name'),
+                    'error': result.get('error')
+                })
+        
+        return {
+            'success': len(failed) == 0,
+            'deleted': deleted,
+            'failed': failed,
+            'total': len(containers_with_hosts),
+            'deleted_count': len(deleted),
+            'failed_count': len(failed)
+        }
+
+
 multi_docker_service = MultiDockerService()
+async_multi_docker_service = AsyncMultiDockerService(multi_docker_service)

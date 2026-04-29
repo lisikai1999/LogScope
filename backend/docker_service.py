@@ -1899,5 +1899,154 @@ class DockerService:
         }
 
 
-# 全局实例
+import asyncio
+
+
+class AsyncDockerService:
+    def __init__(self, sync_service: DockerService):
+        self._sync = sync_service
+    
+    async def list_containers_async(
+        self, 
+        all_containers: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.list_containers,
+            all_containers=all_containers,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+    
+    async def get_container_logs_async(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        before: Optional[int] = None,
+        search: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._sync.get_container_logs,
+            container_id=container_id,
+            since=since,
+            until=until,
+            tail=tail,
+            limit=limit,
+            before=before,
+            search=search
+        )
+    
+    async def get_container_logs_paginated_async(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        start_from_head: bool = False,
+        next_token: Optional[str] = None,
+        direction: Optional[str] = None,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_logs_paginated,
+            container_id=container_id,
+            since=since,
+            until=until,
+            tail=tail,
+            limit=limit,
+            start_from_head=start_from_head,
+            next_token=next_token,
+            direction=direction,
+            search=search
+        )
+    
+    async def get_container_info_async(self, container_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_info,
+            container_id
+        )
+    
+    async def get_container_full_info_async(self, container_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_full_info,
+            container_id
+        )
+    
+    async def start_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(
+            self._sync.start_container,
+            container_id
+        )
+    
+    async def stop_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(
+            self._sync.stop_container,
+            container_id
+        )
+    
+    async def restart_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(
+            self._sync.restart_container,
+            container_id
+        )
+    
+    async def delete_container_async(self, container_id: str, force: bool = False) -> bool:
+        return await asyncio.to_thread(
+            self._sync.delete_container,
+            container_id,
+            force=force
+        )
+    
+    async def start_containers_batch_async(self, container_ids: List[str]) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.start_containers_batch,
+            container_ids
+        )
+    
+    async def stop_containers_batch_async(self, container_ids: List[str]) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.stop_containers_batch,
+            container_ids
+        )
+    
+    async def delete_containers_batch_async(self, container_ids: List[str], force: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.delete_containers_batch,
+            container_ids,
+            force=force
+        )
+    
+    async def get_container_stats_async(self, container_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_stats,
+            container_id
+        )
+    
+    async def get_all_containers_stats_async(self, all_containers: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_all_containers_stats,
+            all_containers
+        )
+    
+    async def get_containers_runtime_stats_async(self, all_containers: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_containers_runtime_stats,
+            all_containers
+        )
+    
+    async def get_image_layers_async(self, image_name_or_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_image_layers,
+            image_name_or_id
+        )
+
+
 docker_service = DockerService()
+async_docker_service = AsyncDockerService(docker_service)
