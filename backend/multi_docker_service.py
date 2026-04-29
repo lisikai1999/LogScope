@@ -4,6 +4,7 @@ import time
 import traceback
 import docker
 from datetime import datetime
+from dateutil.parser import parse as dateutil_parse
 from typing import List, Optional, Dict, Any, Tuple
 from logger import app_logger
 from exceptions import (
@@ -575,12 +576,48 @@ class DockerHostClient:
         }
     
     def _parse_timestamp(self, timestamp_str: str) -> Optional[float]:
-        """解析 ISO 格式时间戳"""
+        """
+        解析 ISO 格式时间戳
+        
+        支持多种格式（兼容不同 Docker 版本）：
+        - 2024-01-01T12:00:00Z (标准格式)
+        - 2024-01-01T12:00:00+00:00 (标准格式)
+        - 2024-01-01T12:00:00.095007878Z (纳秒精度, Docker 24.0.7)
+        - 2024-01-01T12:00:00.095007Z (微秒精度, Docker 29.1.4)
+        
+        返回：Unix 时间戳（秒）或 None
+        """
         if not timestamp_str:
             return None
         
         try:
-            return datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).timestamp()
+            normalized_ts = timestamp_str.replace('Z', '+00:00')
+            try:
+                return datetime.fromisoformat(normalized_ts).timestamp()
+            except ValueError:
+                pass
+            
+            try:
+                return dateutil_parse(timestamp_str).timestamp()
+            except ValueError:
+                pass
+            
+            ts_match = re.match(
+                r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(Z|[+-]\d{2}:\d{2})?',
+                timestamp_str
+            )
+            if ts_match:
+                datetime_part = ts_match.group(1)
+                fractional = ts_match.group(2)
+                tz_part = ts_match.group(3) or ''
+                
+                if len(fractional) > 6:
+                    fractional = fractional[:6]
+                
+                normalized = f"{datetime_part}.{fractional}{tz_part.replace('Z', '+00:00')}"
+                return datetime.fromisoformat(normalized).timestamp()
+            
+            return None
         except Exception as e:
             app_logger.debug(f"时间戳解析失败: {timestamp_str}, 错误: {e}")
             return None

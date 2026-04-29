@@ -405,7 +405,7 @@ const MAX_RETRY_COUNT = 3
 
 const sinceTime = ref('')
 const untilTime = ref('')
-const tailCount = ref(100)
+const tailCount = ref(1000)
 const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
@@ -730,7 +730,7 @@ const formatDateTimeLocal = (date) => {
 const clearFilters = () => {
   sinceTime.value = ''
   untilTime.value = ''
-  tailCount.value = 100
+  tailCount.value = 1000
   filterStdout.value = true
   filterStderr.value = true
   searchQuery.value = ''
