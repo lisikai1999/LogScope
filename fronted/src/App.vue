@@ -1,12 +1,18 @@
 <template>
   <div id="app">
     <router-view />
+    <StatusBar />
   </div>
 </template>
 
 <script>
+import StatusBar from './components/StatusBar.vue'
+
 export default {
-  name: 'App'
+  name: 'App',
+  components: {
+    StatusBar
+  }
 }
 </script>
 
@@ -26,5 +32,12 @@ export default {
 body {
   background-color: var(--bg-secondary);
   color: var(--text-primary);
+  margin: 0;
+  padding: 0;
+  padding-bottom: 40px;
+}
+
+#app {
+  min-height: 100vh;
 }
 </style>
