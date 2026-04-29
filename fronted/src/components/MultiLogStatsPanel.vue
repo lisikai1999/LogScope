@@ -148,7 +148,7 @@ const props = defineProps({
   }
 })
 
-const isExpanded = ref(true)
+const isExpanded = ref(false)
 const trendChartRef = ref(null)
 const containerChartRef = ref(null)
 let trendChart = null
