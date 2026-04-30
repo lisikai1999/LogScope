@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+from enum import Enum
 from pydantic import BaseModel, Field
 from models import UserRole, ContainerPermission, AuditAction
 
@@ -111,6 +112,7 @@ class ContainerPermissionInfo(BaseModel):
 
 
 class NamePatternPermissionInfo(BaseModel):
+    id: int
     name_pattern: str
     permission_level: str
     can_read: bool
@@ -223,3 +225,80 @@ class ContainerWithHost(BaseModel):
     created: int
     host_id: int
     host_name: str
+
+
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskType(str, Enum):
+    LOG_EXPORT = "log_export"
+    LOG_FETCH = "log_fetch"
+    CONTAINER_BATCH_START = "container_batch_start"
+    CONTAINER_BATCH_STOP = "container_batch_stop"
+    CONTAINER_BATCH_DELETE = "container_batch_delete"
+    DASHBOARD_STATS = "dashboard_stats"
+    DASHBOARD_RUNTIME = "dashboard_runtime"
+
+
+class TaskResponse(BaseModel):
+    task_id: str
+    task_type: TaskType
+    status: TaskStatus
+    created_at: float
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    progress: int = 0
+    progress_message: str = ""
+    result: Optional[Any] = None
+    error: Optional[str] = None
+    user_id: Optional[int] = None
+    task_params: Dict[str, Any] = {}
+    duration: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
+class TaskListResponse(BaseModel):
+    tasks: List[TaskResponse]
+    total: int
+
+
+class LogExportTaskRequest(BaseModel):
+    container_id: str
+    format: str = "json"
+    since: Optional[int] = None
+    until: Optional[int] = None
+    search: Optional[str] = None
+
+
+class LogFetchTaskRequest(BaseModel):
+    container_id: str
+    since: Optional[int] = None
+    until: Optional[int] = None
+    tail: Optional[int] = None
+    limit: Optional[int] = None
+    start_from_head: bool = False
+    next_token: Optional[str] = None
+    direction: Optional[str] = None
+    search: Optional[str] = None
+
+
+class ContainerBatchTaskRequest(BaseModel):
+    container_ids: List[str]
+    force: Optional[bool] = False
+
+
+class BatchOperationItem(BaseModel):
+    container_id: str
+    host_id: Optional[int] = None
+
+
+class MultiHostBatchTaskRequest(BaseModel):
+    containers: List[BatchOperationItem]
+    force: Optional[bool] = False
