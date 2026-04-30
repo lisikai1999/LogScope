@@ -112,6 +112,7 @@ class ContainerPermissionInfo(BaseModel):
 
 
 class NamePatternPermissionInfo(BaseModel):
+    id: int
     name_pattern: str
     permission_level: str
     can_read: bool

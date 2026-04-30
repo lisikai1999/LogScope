@@ -583,6 +583,7 @@ async def get_user_permissions(
     for pp in pattern_permissions:
         pattern_permission_infos.append(
             NamePatternPermissionInfo(
+                id=pp.id,
                 name_pattern=pp.name_pattern,
                 permission_level=pp.permission_level,
                 can_read=pp.can_read(),
