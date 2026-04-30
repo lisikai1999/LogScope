@@ -2303,58 +2303,6 @@ async def delete_docker_host(
     }
 
 
-@app.post("/api/hosts/{host_id}/test")
-async def test_docker_host_connection(
-    host_id: int,
-    current_admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """测试 Docker 主机连接（管理员）"""
-    if host_id == 0:
-        client = multi_docker_service.get_host_client(0)
-        if client:
-            connected = client.is_connected()
-            return {
-                "success": connected,
-                "connected": connected,
-                "message": "本地 Docker 连接成功" if connected else "本地 Docker 连接失败",
-                "error": client.last_connect_error if not connected else None
-            }
-        else:
-            return {
-                "success": False,
-                "connected": False,
-                "message": "无法初始化本地 Docker 客户端"
-            }
-    
-    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
-    host = result.scalar_one_or_none()
-    
-    if not host:
-        raise HTTPException(status_code=404, detail="主机不存在")
-    
-    client = multi_docker_service.get_host_client(host_id)
-    
-    if not client:
-        client = multi_docker_service.add_host(host.id, host.name, host.host)
-        if not client:
-            return {
-                "success": False,
-                "connected": False,
-                "message": f"无法连接到主机: {host.name}",
-                "error": multi_docker_service.get_host_client(host_id).last_connect_error if multi_docker_service.get_host_client(host_id) else "Unknown error"
-            }
-    
-    connected = client.is_connected()
-    
-    return {
-        "success": connected,
-        "connected": connected,
-        "message": f"主机 {host.name} 连接成功" if connected else f"主机 {host.name} 连接失败",
-        "error": client.last_connect_error if not connected else None
-    }
-
-
 class BatchOperationItem(BaseModel):
     container_id: str
     host_id: Optional[int] = None
@@ -2487,6 +2435,58 @@ async def batch_delete_containers(
     )
     
     return result
+
+
+@app.post("/api/hosts/{host_id}/test")
+async def test_docker_host_connection(
+    host_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """测试 Docker 主机连接（管理员）"""
+    if host_id == 0:
+        client = multi_docker_service.get_host_client(0)
+        if client:
+            connected = client.is_connected()
+            return {
+                "success": connected,
+                "connected": connected,
+                "message": "本地 Docker 连接成功" if connected else "本地 Docker 连接失败",
+                "error": client.last_connect_error if not connected else None
+            }
+        else:
+            return {
+                "success": False,
+                "connected": False,
+                "message": "无法初始化本地 Docker 客户端"
+            }
+    
+    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
+    host = result.scalar_one_or_none()
+    
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    
+    client = multi_docker_service.get_host_client(host_id)
+    
+    if not client:
+        client = multi_docker_service.add_host(host.id, host.name, host.host)
+        if not client:
+            return {
+                "success": False,
+                "connected": False,
+                "message": f"无法连接到主机: {host.name}",
+                "error": multi_docker_service.get_host_client(host_id).last_connect_error if multi_docker_service.get_host_client(host_id) else "Unknown error"
+            }
+    
+    connected = client.is_connected()
+    
+    return {
+        "success": connected,
+        "connected": connected,
+        "message": f"主机 {host.name} 连接成功" if connected else f"主机 {host.name} 连接失败",
+        "error": client.last_connect_error if not connected else None
+    }
 
 
 @app.get("/api/tasks", response_model=TaskListResponse)
