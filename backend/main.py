@@ -17,8 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
 from sqlalchemy.orm import selectinload
 
-from docker_service import docker_service
-from multi_docker_service import multi_docker_service
+from docker_service import docker_service, async_docker_service
+from multi_docker_service import multi_docker_service, async_multi_docker_service
+from async_task_manager import task_manager, start_task_manager, stop_task_manager, TaskStatus as AsyncTaskStatus
 from logger import app_logger
 from config import settings
 from database import get_db, async_session_maker, init_db
@@ -47,7 +48,15 @@ from schemas import (
     DockerHostUpdate,
     DockerHostResponse,
     DockerHostStatus,
-    ContainerWithHost
+    ContainerWithHost,
+    TaskType,
+    TaskResponse,
+    TaskListResponse,
+    LogExportTaskRequest,
+    LogFetchTaskRequest,
+    ContainerBatchTaskRequest,
+    MultiHostBatchTaskRequest,
+    BatchOperationItem as SchemaBatchOperationItem
 )
 from audit_service import (
     AuditService,
@@ -83,10 +92,12 @@ async def lifespan(app: FastAPI):
         await create_default_admin(session)
     
     await start_audit_cleanup_scheduler(async_session_maker)
+    await start_task_manager()
     
     yield
     
     await stop_audit_cleanup_scheduler()
+    await stop_task_manager()
 
 
 app = FastAPI(
@@ -2292,58 +2303,6 @@ async def delete_docker_host(
     }
 
 
-@app.post("/api/hosts/{host_id}/test")
-async def test_docker_host_connection(
-    host_id: int,
-    current_admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """测试 Docker 主机连接（管理员）"""
-    if host_id == 0:
-        client = multi_docker_service.get_host_client(0)
-        if client:
-            connected = client.is_connected()
-            return {
-                "success": connected,
-                "connected": connected,
-                "message": "本地 Docker 连接成功" if connected else "本地 Docker 连接失败",
-                "error": client.last_connect_error if not connected else None
-            }
-        else:
-            return {
-                "success": False,
-                "connected": False,
-                "message": "无法初始化本地 Docker 客户端"
-            }
-    
-    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
-    host = result.scalar_one_or_none()
-    
-    if not host:
-        raise HTTPException(status_code=404, detail="主机不存在")
-    
-    client = multi_docker_service.get_host_client(host_id)
-    
-    if not client:
-        client = multi_docker_service.add_host(host.id, host.name, host.host)
-        if not client:
-            return {
-                "success": False,
-                "connected": False,
-                "message": f"无法连接到主机: {host.name}",
-                "error": multi_docker_service.get_host_client(host_id).last_connect_error if multi_docker_service.get_host_client(host_id) else "Unknown error"
-            }
-    
-    connected = client.is_connected()
-    
-    return {
-        "success": connected,
-        "connected": connected,
-        "message": f"主机 {host.name} 连接成功" if connected else f"主机 {host.name} 连接失败",
-        "error": client.last_connect_error if not connected else None
-    }
-
-
 class BatchOperationItem(BaseModel):
     container_id: str
     host_id: Optional[int] = None
@@ -2476,6 +2435,530 @@ async def batch_delete_containers(
     )
     
     return result
+
+
+@app.post("/api/hosts/{host_id}/test")
+async def test_docker_host_connection(
+    host_id: int,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """测试 Docker 主机连接（管理员）"""
+    if host_id == 0:
+        client = multi_docker_service.get_host_client(0)
+        if client:
+            connected = client.is_connected()
+            return {
+                "success": connected,
+                "connected": connected,
+                "message": "本地 Docker 连接成功" if connected else "本地 Docker 连接失败",
+                "error": client.last_connect_error if not connected else None
+            }
+        else:
+            return {
+                "success": False,
+                "connected": False,
+                "message": "无法初始化本地 Docker 客户端"
+            }
+    
+    result = await db.execute(select(DockerHost).where(DockerHost.id == host_id))
+    host = result.scalar_one_or_none()
+    
+    if not host:
+        raise HTTPException(status_code=404, detail="主机不存在")
+    
+    client = multi_docker_service.get_host_client(host_id)
+    
+    if not client:
+        client = multi_docker_service.add_host(host.id, host.name, host.host)
+        if not client:
+            return {
+                "success": False,
+                "connected": False,
+                "message": f"无法连接到主机: {host.name}",
+                "error": multi_docker_service.get_host_client(host_id).last_connect_error if multi_docker_service.get_host_client(host_id) else "Unknown error"
+            }
+    
+    connected = client.is_connected()
+    
+    return {
+        "success": connected,
+        "connected": connected,
+        "message": f"主机 {host.name} 连接成功" if connected else f"主机 {host.name} 连接失败",
+        "error": client.last_connect_error if not connected else None
+    }
+
+
+@app.get("/api/tasks", response_model=TaskListResponse)
+async def list_tasks(
+    task_type: Optional[TaskType] = Query(None, description="按任务类型筛选"),
+    status: Optional[AsyncTaskStatus] = Query(None, description="按状态筛选"),
+    current_user: User = Depends(get_current_user)
+):
+    """获取任务列表"""
+    tasks = task_manager.list_tasks(
+        user_id=current_user.id if not current_user.is_admin() else None,
+        task_type=task_type.value if task_type else None,
+        status=status if status else None
+    )
+    
+    task_responses = []
+    for task in tasks:
+        task_dict = task.to_dict()
+        task_responses.append(TaskResponse(
+            task_id=task_dict["task_id"],
+            task_type=TaskType(task_dict["task_type"]),
+            status=AsyncTaskStatus(task_dict["status"]),
+            created_at=task_dict["created_at"],
+            started_at=task_dict.get("started_at"),
+            completed_at=task_dict.get("completed_at"),
+            progress=task_dict["progress"],
+            progress_message=task_dict["progress_message"],
+            result=task_dict.get("result"),
+            error=task_dict.get("error"),
+            user_id=task_dict.get("user_id"),
+            task_params=task_dict.get("task_params", {}),
+            duration=task_dict.get("duration")
+        ))
+    
+    return TaskListResponse(
+        tasks=task_responses,
+        total=len(task_responses)
+    )
+
+
+@app.get("/api/tasks/{task_id}", response_model=TaskResponse)
+async def get_task_status(
+    task_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """获取单个任务的状态"""
+    task_status = task_manager.get_task_status(task_id)
+    
+    if task_status is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    if not current_user.is_admin():
+        task = task_manager.get_task(task_id)
+        if task and task.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权访问此任务")
+    
+    return TaskResponse(
+        task_id=task_status["task_id"],
+        task_type=TaskType(task_status["task_type"]),
+        status=AsyncTaskStatus(task_status["status"]),
+        created_at=task_status["created_at"],
+        started_at=task_status.get("started_at"),
+        completed_at=task_status.get("completed_at"),
+        progress=task_status["progress"],
+        progress_message=task_status["progress_message"],
+        result=task_status.get("result"),
+        error=task_status.get("error"),
+        user_id=task_status.get("user_id"),
+        task_params=task_status.get("task_params", {}),
+        duration=task_status.get("duration")
+    )
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(
+    task_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """取消一个正在运行的任务"""
+    task = task_manager.get_task(task_id)
+    
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    if not current_user.is_admin():
+        if task.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权取消此任务")
+    
+    success = task_manager.cancel_task(task_id)
+    
+    return {
+        "success": success,
+        "message": "任务已取消" if success else "任务无法取消（可能已完成或不存在）"
+    }
+
+
+@app.post("/api/tasks/log-export")
+async def submit_log_export_task(
+    request: Request,
+    task_request: LogExportTaskRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """提交日志导出任务（异步执行）"""
+    if not await check_container_permission_with_name(db, current_user, task_request.container_id, require_write=False):
+        raise AuthorizationError("您没有权限导出该容器的日志")
+    
+    async def export_logs_task():
+        app_logger.info(f"[Async Task] 开始导出日志: container_id={task_request.container_id}")
+        
+        logs = await async_docker_service.get_container_logs_async(
+            container_id=task_request.container_id,
+            since=task_request.since,
+            until=task_request.until,
+            search=task_request.search
+        )
+        
+        logs.sort(key=lambda x: x['timestamp'])
+        
+        format_lower = task_request.format.lower()
+        
+        if format_lower == 'txt':
+            content = logs_to_txt(logs)
+        elif format_lower == 'csv':
+            content = logs_to_csv(logs)
+        else:
+            content = logs_to_json(logs)
+        
+        container_info = docker_service.get_container_info(task_request.container_id)
+        container_name = container_info.get('names', [task_request.container_id[:12]])[0] if container_info else task_request.container_id[:12]
+        
+        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{container_name}_logs_{timestamp_str}.{format_lower}"
+        
+        app_logger.info(f"[Async Task] 日志导出完成: container_id={task_request.container_id}, log_count={len(logs)}")
+        
+        return {
+            "content": content,
+            "format": format_lower,
+            "filename": filename,
+            "log_count": len(logs)
+        }
+    
+    task_id = await task_manager.submit_task(
+        task_type=TaskType.LOG_EXPORT.value,
+        coro=export_logs_task(),
+        user_id=current_user.id,
+        task_params={
+            "container_id": task_request.container_id,
+            "format": task_request.format,
+            "since": task_request.since,
+            "until": task_request.until,
+            "search": task_request.search
+        }
+    )
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_user.id,
+        username=current_user.username,
+        action=AuditAction.OTHER,
+        resource_type="async_task",
+        resource_id=task_id,
+        description=f"提交日志导出任务: {task_request.container_id[:12]}",
+        details={
+            "task_id": task_id,
+            "container_id": task_request.container_id,
+            "format": task_request.format
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": "日志导出任务已提交，您可以通过 /api/tasks/{task_id} 查询任务状态"
+    }
+
+
+@app.post("/api/tasks/log-fetch")
+async def submit_log_fetch_task(
+    request: Request,
+    task_request: LogFetchTaskRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """提交日志获取任务（异步执行，适用于大量日志）"""
+    if not await check_container_permission_with_name(db, current_user, task_request.container_id, require_write=False):
+        raise AuthorizationError("您没有权限查看该容器的日志")
+    
+    async def fetch_logs_task():
+        app_logger.info(f"[Async Task] 开始获取日志: container_id={task_request.container_id}")
+        
+        result = await async_docker_service.get_container_logs_paginated_async(
+            container_id=task_request.container_id,
+            since=task_request.since,
+            until=task_request.until,
+            tail=task_request.tail,
+            limit=task_request.limit,
+            start_from_head=task_request.start_from_head,
+            next_token=task_request.next_token,
+            direction=task_request.direction,
+            search=task_request.search
+        )
+        
+        app_logger.info(f"[Async Task] 日志获取完成: container_id={task_request.container_id}, log_count={len(result.get('logs', []))}")
+        
+        return result
+    
+    task_id = await task_manager.submit_task(
+        task_type=TaskType.LOG_FETCH.value,
+        coro=fetch_logs_task(),
+        user_id=current_user.id,
+        task_params={
+            "container_id": task_request.container_id,
+            "since": task_request.since,
+            "until": task_request.until,
+            "tail": task_request.tail,
+            "limit": task_request.limit,
+            "start_from_head": task_request.start_from_head,
+            "next_token": task_request.next_token,
+            "direction": task_request.direction,
+            "search": task_request.search
+        }
+    )
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_user.id,
+        username=current_user.username,
+        action=AuditAction.OTHER,
+        resource_type="async_task",
+        resource_id=task_id,
+        description=f"提交日志获取任务: {task_request.container_id[:12]}",
+        details={
+            "task_id": task_id,
+            "container_id": task_request.container_id
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": "日志获取任务已提交，您可以通过 /api/tasks/{task_id} 查询任务状态"
+    }
+
+
+@app.post("/api/tasks/batch-start")
+async def submit_batch_start_task(
+    request: Request,
+    task_request: ContainerBatchTaskRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """提交批量启动容器任务（异步执行）"""
+    if not current_user.is_admin():
+        for container_id in task_request.container_ids:
+            if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
+                raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
+    
+    async def batch_start_task():
+        app_logger.info(f"[Async Task] 开始批量启动容器: count={len(task_request.container_ids)}")
+        
+        result = await async_docker_service.start_containers_batch_async(task_request.container_ids)
+        
+        app_logger.info(f"[Async Task] 批量启动完成: started={result['started_count']}, failed={result['failed_count']}")
+        
+        return result
+    
+    task_id = await task_manager.submit_task(
+        task_type=TaskType.CONTAINER_BATCH_START.value,
+        coro=batch_start_task(),
+        user_id=current_user.id,
+        task_params={
+            "container_ids": task_request.container_ids
+        }
+    )
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_user.id,
+        username=current_user.username,
+        action=AuditAction.BATCH_START_CONTAINERS,
+        resource_type="async_task",
+        resource_id=task_id,
+        description=f"提交批量启动任务: {len(task_request.container_ids)} 个容器",
+        details={
+            "task_id": task_id,
+            "container_count": len(task_request.container_ids)
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": f"批量启动任务已提交（{len(task_request.container_ids)} 个容器），您可以通过 /api/tasks/{task_id} 查询任务状态"
+    }
+
+
+@app.post("/api/tasks/batch-stop")
+async def submit_batch_stop_task(
+    request: Request,
+    task_request: ContainerBatchTaskRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """提交批量停止容器任务（异步执行）"""
+    if not current_user.is_admin():
+        for container_id in task_request.container_ids:
+            if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
+                raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
+    
+    async def batch_stop_task():
+        app_logger.info(f"[Async Task] 开始批量停止容器: count={len(task_request.container_ids)}")
+        
+        result = await async_docker_service.stop_containers_batch_async(task_request.container_ids)
+        
+        app_logger.info(f"[Async Task] 批量停止完成: stopped={result['stopped_count']}, failed={result['failed_count']}")
+        
+        return result
+    
+    task_id = await task_manager.submit_task(
+        task_type=TaskType.CONTAINER_BATCH_STOP.value,
+        coro=batch_stop_task(),
+        user_id=current_user.id,
+        task_params={
+            "container_ids": task_request.container_ids
+        }
+    )
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_user.id,
+        username=current_user.username,
+        action=AuditAction.BATCH_STOP_CONTAINERS,
+        resource_type="async_task",
+        resource_id=task_id,
+        description=f"提交批量停止任务: {len(task_request.container_ids)} 个容器",
+        details={
+            "task_id": task_id,
+            "container_count": len(task_request.container_ids)
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": f"批量停止任务已提交（{len(task_request.container_ids)} 个容器），您可以通过 /api/tasks/{task_id} 查询任务状态"
+    }
+
+
+@app.post("/api/tasks/batch-delete")
+async def submit_batch_delete_task(
+    request: Request,
+    task_request: ContainerBatchTaskRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """提交批量删除容器任务（异步执行）"""
+    if not current_user.is_admin():
+        for container_id in task_request.container_ids:
+            if not await check_container_permission_with_name(db, current_user, container_id, require_write=True):
+                raise AuthorizationError(f"您没有权限操作容器: {container_id[:12]}")
+    
+    async def batch_delete_task():
+        app_logger.info(f"[Async Task] 开始批量删除容器: count={len(task_request.container_ids)}, force={task_request.force}")
+        
+        result = await async_docker_service.delete_containers_batch_async(
+            task_request.container_ids, 
+            force=task_request.force
+        )
+        
+        app_logger.info(f"[Async Task] 批量删除完成: deleted={result['deleted_count']}, failed={result['failed_count']}")
+        
+        return result
+    
+    task_id = await task_manager.submit_task(
+        task_type=TaskType.CONTAINER_BATCH_DELETE.value,
+        coro=batch_delete_task(),
+        user_id=current_user.id,
+        task_params={
+            "container_ids": task_request.container_ids,
+            "force": task_request.force
+        }
+    )
+    
+    audit_service = AuditService(db)
+    await audit_service.log_action(
+        user_id=current_user.id,
+        username=current_user.username,
+        action=AuditAction.BATCH_DELETE_CONTAINERS,
+        resource_type="async_task",
+        resource_id=task_id,
+        description=f"提交批量删除任务: {len(task_request.container_ids)} 个容器",
+        details={
+            "task_id": task_id,
+            "container_count": len(task_request.container_ids),
+            "force": task_request.force
+        },
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        status="success"
+    )
+    
+    return {
+        "success": True,
+        "task_id": task_id,
+        "message": f"批量删除任务已提交（{len(task_request.container_ids)} 个容器），您可以通过 /api/tasks/{task_id} 查询任务状态"
+    }
+
+
+@app.get("/api/tasks/{task_id}/result/download")
+async def download_task_result(
+    task_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """下载任务结果（适用于日志导出等任务）"""
+    task_status = task_manager.get_task_status(task_id)
+    
+    if task_status is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    
+    if not current_user.is_admin():
+        task = task_manager.get_task(task_id)
+        if task and task.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="无权访问此任务")
+    
+    if task_status["status"] != AsyncTaskStatus.COMPLETED.value:
+        raise HTTPException(status_code=400, detail="任务尚未完成")
+    
+    result = task_status.get("result")
+    if not result:
+        raise HTTPException(status_code=404, detail="任务结果不存在")
+    
+    if task_status["task_type"] == TaskType.LOG_EXPORT.value:
+        content = result.get("content", "")
+        format_type = result.get("format", "json")
+        filename = result.get("filename", f"export_{task_id}.{format_type}")
+        
+        if format_type == 'txt':
+            media_type = 'text/plain; charset=utf-8'
+        elif format_type == 'csv':
+            media_type = 'text/csv; charset=utf-8'
+        else:
+            media_type = 'application/json; charset=utf-8'
+        
+        return StreamingResponse(
+            iter([content.encode('utf-8')]),
+            media_type=media_type,
+            headers={
+                'Content-Disposition': f'attachment; filename="{filename}"',
+                'Access-Control-Expose-Headers': 'Content-Disposition'
+            }
+        )
+    else:
+        return JSONResponse(
+            content={
+                "success": True,
+                "result": result
+            }
+        )
 
 
 if __name__ == "__main__":
