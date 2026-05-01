@@ -390,6 +390,64 @@ const hostApi = {
 }
 
 
+const scanApi = {
+  async getTrivyStatus() {
+    return get('/api/trivy/status')
+  },
+  
+  async scanImage(data) {
+    return post('/api/images/scan', data)
+  },
+  
+  async getScans(params = {}) {
+    return get('/api/scans', params)
+  },
+  
+  async getScanDetail(scanId) {
+    return get(`/api/scans/${scanId}`)
+  },
+  
+  async deleteScan(scanId) {
+    return del(`/api/scans/${scanId}`)
+  },
+  
+  async getScansSummary(params = {}) {
+    return get('/api/scans/summary', params)
+  },
+  
+  async getVulnerabilityTrends(params = {}) {
+    return get('/api/scans/trends', params)
+  }
+}
+
+
+const buildApi = {
+  async getBuildServiceStatus() {
+    return get('/api/build/service/status')
+  },
+  
+  async buildImage(data) {
+    return post('/api/images/build', data)
+  },
+  
+  async getBuilds(params = {}) {
+    return get('/api/builds', params)
+  },
+  
+  async getBuildDetail(buildId) {
+    return get(`/api/builds/${buildId}`)
+  },
+  
+  async getBuildLogs(buildId) {
+    return get(`/api/builds/${buildId}/logs`)
+  },
+  
+  async deleteBuild(buildId) {
+    return del(`/api/builds/${buildId}`)
+  }
+}
+
+
 export {
   globalLoading,
   getErrorMessage,
@@ -407,7 +465,9 @@ export {
   authApi,
   auditLogApi,
   userManagementApi,
-  hostApi
+  hostApi,
+  scanApi,
+  buildApi
 }
 
 export default {
@@ -425,5 +485,7 @@ export default {
   authApi,
   auditLogApi,
   userManagementApi,
-  hostApi
+  hostApi,
+  scanApi,
+  buildApi
 }

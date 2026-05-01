@@ -9,6 +9,8 @@ import AuditLog from '../views/AuditLog.vue'
 import HostManagement from '../views/HostManagement.vue'
 import ImageManagement from '../views/ImageManagement.vue'
 import RegistryManagement from '../views/RegistryManagement.vue'
+import ImageScan from '../views/ImageScan.vue'
+import ImageBuild from '../views/ImageBuild.vue'
 
 
 const routes = [
@@ -70,6 +72,18 @@ const routes = [
     path: '/registries',
     name: 'RegistryManagement',
     component: RegistryManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/scans',
+    name: 'ImageScan',
+    component: ImageScan,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/builds',
+    name: 'ImageBuild',
+    component: ImageBuild,
     meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]
