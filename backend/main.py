@@ -33,7 +33,17 @@ from models import (
     SystemSetting,
     DockerHost,
     ImageRegistry,
-    ImageRegistryType
+    ImageRegistryType,
+    ImageScan,
+    ImageVulnerability,
+    ImageSecret,
+    ImageConfigIssue,
+    ImageBuild,
+    ImageBuildLog,
+    ScanStatus,
+    BuildStatus,
+    ScanType,
+    VulnerabilitySeverity
 )
 from schemas import (
     UserLogin, Token, UserCreate, UserUpdate, UserResponse, 
@@ -70,7 +80,22 @@ from schemas import (
     ImagePushRequest,
     ImageTagAddRequest,
     ImageTagRemoveRequest,
-    ImageDeleteRequest
+    ImageDeleteRequest,
+    ImageScanRequest,
+    ImageScanResponse,
+    ImageScanDetailResponse,
+    ImageScanListResponse,
+    ImageScanSummaryResponse,
+    ImageVulnerabilityTrendResponse,
+    ImageBuildRequest,
+    ImageBuildResponse,
+    ImageBuildDetailResponse,
+    ImageBuildListResponse,
+    ImageBuildLogResponse,
+    ImageVulnerabilityResponse,
+    ImageSecretResponse,
+    ImageConfigIssueResponse,
+    ImageVulnerabilitySummary
 )
 from audit_service import (
     AuditService,
@@ -97,6 +122,8 @@ from exceptions import (
     PermissionNotFoundError,
     PermissionAlreadyExistsError
 )
+from trivy_service import trivy_service, TrivyScanResult, TrivyVulnerability, TrivySecret, TrivyConfigIssue
+from image_build_service import image_build_service, BuildResult, BuildLogEntry
 
 
 @asynccontextmanager
@@ -3727,6 +3754,1113 @@ async def delete_registry(
     except Exception as e:
         log_error("delete_registry", e, registry_id=registry_id)
         raise
+
+
+async def get_scan_registry_auth(db: AsyncSession, registry_id: Optional[int]) -> Optional[Dict[str, Any]]:
+    """获取扫描所需的仓库认证配置"""
+    if not registry_id:
+        return None
+    
+    result = await db.execute(select(ImageRegistry).where(ImageRegistry.id == registry_id))
+    registry = result.scalar_one_or_none()
+    
+    if not registry:
+        return None
+    
+    auth_config = {}
+    if registry.username:
+        auth_config['username'] = registry.username
+    if registry.password:
+        if registry._is_encrypted(registry.password):
+            from encryption_service import decrypt
+            decrypted = decrypt(registry.password)
+            if decrypted:
+                auth_config['password'] = decrypted
+        else:
+            auth_config['password'] = registry.password
+    
+    return auth_config if auth_config else None
+
+
+def save_scan_results_to_db(
+    db: Session,
+    scan: ImageScan,
+    scan_result: TrivyScanResult
+):
+    """保存扫描结果到数据库"""
+    scan.critical_count = scan_result.critical_count
+    scan.high_count = scan_result.high_count
+    scan.medium_count = scan_result.medium_count
+    scan.low_count = scan_result.low_count
+    scan.unknown_count = scan_result.unknown_count
+    scan.secret_count = scan_result.secret_count
+    scan.config_issue_count = scan_result.config_issue_count
+    
+    for vuln in scan_result.vulnerabilities:
+        db_vuln = ImageVulnerability(
+            scan=scan,
+            vulnerability_id=vuln.vulnerability_id,
+            cve_id=vuln.cve_id,
+            ghsa_id=vuln.ghsa_id,
+            severity=vuln.severity,
+            title=vuln.title,
+            description=vuln.description,
+            package_name=vuln.package_name,
+            installed_version=vuln.installed_version,
+            fixed_version=vuln.fixed_version,
+            package_type=vuln.package_type,
+            cvss_score=vuln.cvss_score,
+            cvss_vector=vuln.cvss_vector,
+            primary_url=vuln.primary_url,
+            references=vuln.references,
+            published_date=vuln.published_date,
+            last_modified_date=vuln.last_modified_date
+        )
+        db.add(db_vuln)
+    
+    for secret in scan_result.secrets:
+        db_secret = ImageSecret(
+            scan=scan,
+            secret_type=secret.secret_type,
+            filename=secret.filename,
+            layer=secret.layer,
+            match=secret.match,
+            match_start_index=secret.match_start_index,
+            match_end_index=secret.match_end_index,
+            severity=secret.severity,
+            category=secret.category,
+            description=secret.description
+        )
+        db.add(db_secret)
+    
+    for config_issue in scan_result.config_issues:
+        db_config = ImageConfigIssue(
+            scan=scan,
+            check_type=config_issue.check_type,
+            check_id=config_issue.check_id,
+            severity=config_issue.severity,
+            category=config_issue.category,
+            message=config_issue.message,
+            description=config_issue.description,
+            remediation=config_issue.remediation,
+            location=config_issue.location,
+            references=config_issue.references
+        )
+        db.add(db_config)
+
+
+@app.post("/api/images/scan", response_model=ImageScanResponse)
+async def scan_image(
+    scan_request: ImageScanRequest,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """提交镜像扫描任务（管理员）"""
+    try:
+        app_logger.info(f"[Scan] 开始扫描镜像: {scan_request.image}, 类型: {scan_request.scan_type}")
+        
+        scan = ImageScan(
+            image_name=scan_request.image,
+            scan_type=scan_request.scan_type.value,
+            status=ScanStatus.RUNNING.value,
+            user_id=current_admin.id,
+            progress=0,
+            progress_message="正在准备扫描..."
+        )
+        db.add(scan)
+        await db.commit()
+        await db.refresh(scan)
+        
+        async def run_scan():
+            import functools
+            
+            loop = asyncio.get_event_loop()
+            
+            try:
+                registry_auth = None
+                if scan_request.registry_id:
+                    async with async_session_maker() as session:
+                        registry_auth = await get_scan_registry_auth(session, scan_request.registry_id)
+                
+                scan_func = functools.partial(
+                    trivy_service.scan_image,
+                    image_name=scan_request.image,
+                    scan_type=scan_request.scan_type.value,
+                    registry_auth=registry_auth
+                )
+                
+                scan_result = await loop.run_in_executor(None, scan_func)
+                
+                async with async_session_maker() as session:
+                    result = await session.execute(
+                        select(ImageScan).options(
+                            selectinload(ImageScan.vulnerabilities),
+                            selectinload(ImageScan.secrets),
+                            selectinload(ImageScan.config_issues)
+                        ).where(ImageScan.id == scan.id)
+                    )
+                    current_scan = result.scalar_one_or_none()
+                    
+                    if current_scan:
+                        current_scan.status = ScanStatus.COMPLETED.value
+                        current_scan.progress = 100
+                        current_scan.progress_message = "扫描完成"
+                        current_scan.completed_at = datetime.utcnow()
+                        
+                        sync_session = await session.run_sync(lambda s: s)
+                        save_scan_results_to_db(sync_session, current_scan, scan_result)
+                        
+                        await session.commit()
+                        
+                        app_logger.info(f"[Scan] 扫描完成: {scan_request.image}")
+                
+                return scan_result
+                
+            except Exception as e:
+                app_logger.error(f"[Scan] 扫描失败: {e}")
+                
+                async with async_session_maker() as session:
+                    result = await session.execute(select(ImageScan).where(ImageScan.id == scan.id))
+                    current_scan = result.scalar_one_or_none()
+                    
+                    if current_scan:
+                        current_scan.status = ScanStatus.FAILED.value
+                        current_scan.error_message = str(e)
+                        current_scan.completed_at = datetime.utcnow()
+                        await session.commit()
+                
+                raise
+        
+        task_id = await task_manager.submit_task(
+            task_type="image_scan",
+            coro=run_scan(),
+            user_id=current_admin.id,
+            task_params={
+                "image": scan_request.image,
+                "scan_type": scan_request.scan_type.value,
+                "registry_id": scan_request.registry_id
+            }
+        )
+        
+        scan.task_id = task_id
+        scan.started_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(scan)
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.SCAN_IMAGE,
+            resource_type="image",
+            resource_id=scan_request.image,
+            description=f"开始扫描镜像: {scan_request.image}",
+            details={
+                "scan_id": scan.id,
+                "task_id": task_id,
+                "image": scan_request.image,
+                "scan_type": scan_request.scan_type.value
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return ImageScanResponse.from_orm_with_calculated(scan)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("scan_image", e, image=scan_request.image)
+        raise
+
+
+@app.get("/api/scans", response_model=ImageScanListResponse)
+async def list_scans(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    status: Optional[str] = Query(None, description="按状态筛选"),
+    search: Optional[str] = Query(None, description="搜索镜像名称"),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取扫描记录列表（管理员）"""
+    try:
+        offset = (page - 1) * page_size
+        
+        count_query = select(ImageScan)
+        query = select(ImageScan).order_by(ImageScan.created_at.desc())
+        
+        if status:
+            count_query = count_query.where(ImageScan.status == status)
+            query = query.where(ImageScan.status == status)
+        
+        if search:
+            search_pattern = f"%{search}%"
+            count_query = count_query.where(ImageScan.image_name.ilike(search_pattern))
+            query = query.where(ImageScan.image_name.ilike(search_pattern))
+        
+        count_result = await db.execute(select(ImageScan).where(count_query.whereclause) if count_query.whereclause else select(ImageScan))
+        total = len(count_result.scalars().all())
+        
+        result = await db.execute(query.offset(offset).limit(page_size))
+        scans = result.scalars().all()
+        
+        scan_responses = []
+        for scan in scans:
+            scan_responses.append(ImageScanResponse.from_orm_with_calculated(scan))
+        
+        total_pages = (total + page_size - 1) // page_size
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.LIST_SCANS,
+            resource_type="scan",
+            description=f"获取扫描记录列表，共 {total} 条",
+            details={
+                "page": page,
+                "page_size": page_size,
+                "status": status,
+                "search": search,
+                "total": total
+            },
+            ip_address="internal",
+            user_agent="internal",
+            status="success"
+        )
+        
+        return ImageScanListResponse(
+            scans=scan_responses,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages
+        )
+        
+    except Exception as e:
+        log_error("list_scans", e)
+        raise
+
+
+@app.get("/api/scans/{scan_id}", response_model=ImageScanDetailResponse)
+async def get_scan_detail(
+    scan_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取扫描详情（管理员）"""
+    try:
+        result = await db.execute(
+            select(ImageScan).options(
+                selectinload(ImageScan.vulnerabilities),
+                selectinload(ImageScan.secrets),
+                selectinload(ImageScan.config_issues)
+            ).where(ImageScan.id == scan_id)
+        )
+        scan = result.scalar_one_or_none()
+        
+        if not scan:
+            raise HTTPException(status_code=404, detail="扫描记录不存在")
+        
+        vulnerabilities = [
+            ImageVulnerabilityResponse(
+                id=v.id,
+                scan_id=v.scan_id,
+                vulnerability_id=v.vulnerability_id,
+                cve_id=v.cve_id,
+                ghsa_id=v.ghsa_id,
+                severity=v.severity,
+                title=v.title,
+                description=v.description,
+                package_name=v.package_name,
+                installed_version=v.installed_version,
+                fixed_version=v.fixed_version,
+                package_type=v.package_type,
+                cvss_score=v.cvss_score,
+                cvss_vector=v.cvss_vector,
+                primary_url=v.primary_url,
+                references=v.references,
+                published_date=v.published_date,
+                last_modified_date=v.last_modified_date,
+                created_at=v.created_at
+            )
+            for v in scan.vulnerabilities
+        ]
+        
+        secrets = [
+            ImageSecretResponse(
+                id=s.id,
+                scan_id=s.scan_id,
+                secret_type=s.secret_type,
+                filename=s.filename,
+                layer=s.layer,
+                match=s.match,
+                severity=s.severity,
+                category=s.category,
+                description=s.description,
+                created_at=s.created_at
+            )
+            for s in scan.secrets
+        ]
+        
+        config_issues = [
+            ImageConfigIssueResponse(
+                id=c.id,
+                scan_id=c.scan_id,
+                check_type=c.check_type,
+                check_id=c.check_id,
+                severity=c.severity,
+                category=c.category,
+                message=c.message,
+                description=c.description,
+                remediation=c.remediation,
+                location=c.location,
+                references=c.references,
+                created_at=c.created_at
+            )
+            for c in scan.config_issues
+        ]
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.VIEW_SCAN_RESULT,
+            resource_type="scan",
+            resource_id=str(scan_id),
+            description=f"查看扫描详情: {scan.image_name}",
+            details={
+                "scan_id": scan_id,
+                "image": scan.image_name,
+                "vulnerabilities_count": len(vulnerabilities),
+                "secrets_count": len(secrets),
+                "config_issues_count": len(config_issues)
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return ImageScanDetailResponse(
+            id=scan.id,
+            task_id=scan.task_id,
+            image_name=scan.image_name,
+            image_id=scan.image_id,
+            scan_type=scan.scan_type,
+            status=scan.status,
+            critical_count=scan.critical_count,
+            high_count=scan.high_count,
+            medium_count=scan.medium_count,
+            low_count=scan.low_count,
+            unknown_count=scan.unknown_count,
+            secret_count=scan.secret_count,
+            config_issue_count=scan.config_issue_count,
+            progress=scan.progress,
+            progress_message=scan.progress_message,
+            error_message=scan.error_message,
+            started_at=scan.started_at,
+            completed_at=scan.completed_at,
+            user_id=scan.user_id,
+            created_at=scan.created_at,
+            updated_at=scan.updated_at,
+            total_vulnerabilities=scan.get_total_vulnerabilities(),
+            severity_score=scan.get_severity_score(),
+            vulnerabilities=vulnerabilities,
+            secrets=secrets,
+            config_issues=config_issues,
+            scan_result=scan.scan_result,
+            scan_report=scan.scan_report
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("get_scan_detail", e, scan_id=scan_id)
+        raise
+
+
+@app.delete("/api/scans/{scan_id}")
+async def delete_scan(
+    scan_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除扫描记录（管理员）"""
+    try:
+        result = await db.execute(select(ImageScan).where(ImageScan.id == scan_id))
+        scan = result.scalar_one_or_none()
+        
+        if not scan:
+            raise HTTPException(status_code=404, detail="扫描记录不存在")
+        
+        image_name = scan.image_name
+        
+        await db.delete(scan)
+        await db.commit()
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.DELETE_SCAN,
+            resource_type="scan",
+            resource_id=str(scan_id),
+            description=f"删除扫描记录: {image_name}",
+            details={
+                "scan_id": scan_id,
+                "image": image_name
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "message": f"扫描记录 {scan_id} 删除成功"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("delete_scan", e, scan_id=scan_id)
+        raise
+
+
+@app.get("/api/scans/summary", response_model=ImageScanSummaryResponse)
+async def get_scans_summary(
+    days: int = Query(7, ge=1, le=365, description="统计天数"),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取扫描统计摘要（管理员）"""
+    try:
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
+        
+        total_result = await db.execute(select(ImageScan).where(ImageScan.created_at >= cutoff_date))
+        total_scans = len(total_result.scalars().all())
+        
+        completed_result = await db.execute(
+            select(ImageScan).where(
+                and_(
+                    ImageScan.created_at >= cutoff_date,
+                    ImageScan.status == ScanStatus.COMPLETED.value
+                )
+            )
+        )
+        completed_scans = completed_result.scalars().all()
+        
+        total_vulnerabilities = sum(
+            scan.get_total_vulnerabilities()
+            for scan in completed_scans
+        )
+        
+        by_severity = ImageVulnerabilitySummary()
+        for scan in completed_scans:
+            by_severity.critical += scan.critical_count
+            by_severity.high += scan.high_count
+            by_severity.medium += scan.medium_count
+            by_severity.low += scan.low_count
+            by_severity.unknown += scan.unknown_count
+        
+        recent_result = await db.execute(
+            select(ImageScan).order_by(ImageScan.created_at.desc()).limit(10)
+        )
+        recent_scans = recent_result.scalars().all()
+        
+        recent_scan_responses = [
+            ImageScanResponse.from_orm_with_calculated(scan)
+            for scan in recent_scans
+        ]
+        
+        image_scores = {}
+        for scan in completed_scans:
+            if scan.image_name not in image_scores:
+                image_scores[scan.image_name] = {
+                    "image_name": scan.image_name,
+                    "total_score": 0,
+                    "scan_count": 0,
+                    "critical_count": 0,
+                    "high_count": 0
+                }
+            image_scores[scan.image_name]["total_score"] += scan.get_severity_score()
+            image_scores[scan.image_name]["scan_count"] += 1
+            image_scores[scan.image_name]["critical_count"] += scan.critical_count
+            image_scores[scan.image_name]["high_count"] += scan.high_count
+        
+        top_images = sorted(
+            image_scores.values(),
+            key=lambda x: x["total_score"],
+            reverse=True
+        )[:10]
+        
+        return ImageScanSummaryResponse(
+            total_scans=total_scans,
+            total_vulnerabilities=total_vulnerabilities,
+            by_severity=by_severity,
+            recent_scans=recent_scan_responses,
+            top_images_by_severity=top_images
+        )
+        
+    except Exception as e:
+        log_error("get_scans_summary", e)
+        raise
+
+
+@app.get("/api/scans/trends", response_model=ImageVulnerabilityTrendResponse)
+async def get_vulnerability_trends(
+    period: str = Query("7d", description="统计周期: 7d, 30d, 90d"),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取漏洞趋势分析（管理员）"""
+    try:
+        period_map = {
+            "7d": 7,
+            "30d": 30,
+            "90d": 90
+        }
+        days = period_map.get(period, 7)
+        
+        end_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date = end_date - timedelta(days=days - 1)
+        
+        result = await db.execute(
+            select(ImageScan).where(
+                and_(
+                    ImageScan.created_at >= start_date,
+                    ImageScan.status == ScanStatus.COMPLETED.value
+                )
+            ).order_by(ImageScan.created_at)
+        )
+        scans = result.scalars().all()
+        
+        daily_data = {}
+        for scan in scans:
+            date_str = scan.created_at.strftime("%Y-%m-%d")
+            if date_str not in daily_data:
+                daily_data[date_str] = {
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0,
+                    "unknown": 0,
+                    "total": 0
+                }
+            daily_data[date_str]["critical"] += scan.critical_count
+            daily_data[date_str]["high"] += scan.high_count
+            daily_data[date_str]["medium"] += scan.medium_count
+            daily_data[date_str]["low"] += scan.low_count
+            daily_data[date_str]["unknown"] += scan.unknown_count
+            daily_data[date_str]["total"] += scan.get_total_vulnerabilities()
+        
+        trends = []
+        for i in range(days):
+            current_date = start_date + timedelta(days=i)
+            date_str = current_date.strftime("%Y-%m-%d")
+            
+            if date_str in daily_data:
+                data = daily_data[date_str]
+                trends.append({
+                    "date": date_str,
+                    "critical": data["critical"],
+                    "high": data["high"],
+                    "medium": data["medium"],
+                    "low": data["low"],
+                    "unknown": data["unknown"],
+                    "total": data["total"]
+                })
+            else:
+                trends.append({
+                    "date": date_str,
+                    "critical": 0,
+                    "high": 0,
+                    "medium": 0,
+                    "low": 0,
+                    "unknown": 0,
+                    "total": 0
+                })
+        
+        return ImageVulnerabilityTrendResponse(
+            trends=trends,
+            period=period,
+            start_date=start_date.strftime("%Y-%m-%d"),
+            end_date=end_date.strftime("%Y-%m-%d")
+        )
+        
+    except Exception as e:
+        log_error("get_vulnerability_trends", e)
+        raise
+
+
+@app.post("/api/images/build", response_model=ImageBuildResponse)
+async def build_image(
+    build_request: ImageBuildRequest,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """提交镜像构建任务（管理员）"""
+    try:
+        if build_request.dockerfile_content:
+            is_valid, errors = image_build_service.validate_dockerfile(build_request.dockerfile_content)
+            if not is_valid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Dockerfile 语法错误: {'; '.join(errors)}"
+                )
+        
+        build = ImageBuild(
+            tag=build_request.tag,
+            dockerfile_path=build_request.dockerfile_path,
+            dockerfile_content=build_request.dockerfile_content,
+            context_path=build_request.context_path,
+            build_args=build_request.build_args,
+            platform=build_request.platform,
+            cache_from=build_request.cache_from,
+            labels=build_request.labels,
+            status=BuildStatus.PENDING.value,
+            user_id=current_admin.id,
+            progress=0,
+            progress_message="正在准备构建..."
+        )
+        db.add(build)
+        await db.commit()
+        await db.refresh(build)
+        
+        async def run_build():
+            import functools
+            
+            loop = asyncio.get_event_loop()
+            
+            try:
+                build_kwargs = {
+                    "tag": build_request.tag,
+                    "dockerfile_path": build_request.dockerfile_path,
+                    "dockerfile_content": build_request.dockerfile_content,
+                    "context_path": build_request.context_path,
+                    "build_args": build_request.build_args,
+                    "platform": build_request.platform,
+                    "cache_from": build_request.cache_from,
+                    "labels": build_request.labels,
+                    "pull": build_request.pull,
+                    "no_cache": build_request.no_cache
+                }
+                
+                build_func = functools.partial(
+                    image_build_service.build_image,
+                    **{k: v for k, v in build_kwargs.items() if v is not None}
+                )
+                
+                build_result = await loop.run_in_executor(None, build_func)
+                
+                async with async_session_maker() as session:
+                    result = await session.execute(
+                        select(ImageBuild).options(selectinload(ImageBuild.log))
+                        .where(ImageBuild.id == build.id)
+                    )
+                    current_build = result.scalar_one_or_none()
+                    
+                    if current_build:
+                        if build_result.success:
+                            current_build.status = BuildStatus.COMPLETED.value
+                            current_build.target_image_id = build_result.image_id
+                            current_build.image_size = build_result.image_size
+                            current_build.layers_count = build_result.layers_count
+                        else:
+                            current_build.status = BuildStatus.FAILED.value
+                            current_build.error_message = build_result.error_message
+                        
+                        current_build.progress = 100
+                        current_build.progress_message = "构建完成" if build_result.success else "构建失败"
+                        current_build.completed_at = datetime.utcnow()
+                        
+                        build_log = ImageBuildLog(
+                            build=current_build,
+                            logs=build_result.get_logs_text(),
+                            log_entries=[entry.to_dict() for entry in build_result.logs]
+                        )
+                        session.add(build_log)
+                        
+                        await session.commit()
+                        
+                        app_logger.info(f"[Build] 构建完成: {build_request.tag}, 成功: {build_result.success}")
+                
+                return build_result
+                
+            except Exception as e:
+                app_logger.error(f"[Build] 构建失败: {e}")
+                
+                async with async_session_maker() as session:
+                    result = await session.execute(select(ImageBuild).where(ImageBuild.id == build.id))
+                    current_build = result.scalar_one_or_none()
+                    
+                    if current_build:
+                        current_build.status = BuildStatus.FAILED.value
+                        current_build.error_message = str(e)
+                        current_build.completed_at = datetime.utcnow()
+                        await session.commit()
+                
+                raise
+        
+        task_id = await task_manager.submit_task(
+            task_type="image_build",
+            coro=run_build(),
+            user_id=current_admin.id,
+            task_params={
+                "tag": build_request.tag,
+                "dockerfile_path": build_request.dockerfile_path,
+                "context_path": build_request.context_path,
+                "build_args": build_request.build_args
+            }
+        )
+        
+        build.task_id = task_id
+        build.status = BuildStatus.BUILDING.value
+        build.started_at = datetime.utcnow()
+        await db.commit()
+        await db.refresh(build)
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.BUILD_IMAGE,
+            resource_type="image",
+            resource_id=build_request.tag,
+            description=f"开始构建镜像: {build_request.tag}",
+            details={
+                "build_id": build.id,
+                "task_id": task_id,
+                "tag": build_request.tag,
+                "dockerfile_path": build_request.dockerfile_path
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return ImageBuildResponse(
+            id=build.id,
+            task_id=build.task_id,
+            tag=build.tag,
+            target_image_id=build.target_image_id,
+            dockerfile_path=build.dockerfile_path,
+            context_path=build.context_path,
+            build_args=build.build_args,
+            platform=build.platform,
+            status=build.status,
+            progress=build.progress,
+            progress_message=build.progress_message,
+            started_at=build.started_at,
+            completed_at=build.completed_at,
+            error_message=build.error_message,
+            image_size=build.image_size,
+            layers_count=build.layers_count,
+            user_id=build.user_id,
+            created_at=build.created_at,
+            updated_at=build.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("build_image", e, tag=build_request.tag)
+        raise
+
+
+@app.get("/api/builds", response_model=ImageBuildListResponse)
+async def list_builds(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    status: Optional[str] = Query(None, description="按状态筛选"),
+    search: Optional[str] = Query(None, description="搜索镜像标签"),
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取构建记录列表（管理员）"""
+    try:
+        offset = (page - 1) * page_size
+        
+        count_query = select(ImageBuild)
+        query = select(ImageBuild).order_by(ImageBuild.created_at.desc())
+        
+        if status:
+            count_query = count_query.where(ImageBuild.status == status)
+            query = query.where(ImageBuild.status == status)
+        
+        if search:
+            search_pattern = f"%{search}%"
+            count_query = count_query.where(ImageBuild.tag.ilike(search_pattern))
+            query = query.where(ImageBuild.tag.ilike(search_pattern))
+        
+        count_result = await db.execute(select(ImageBuild).where(count_query.whereclause) if count_query.whereclause else select(ImageBuild))
+        total = len(count_result.scalars().all())
+        
+        result = await db.execute(query.offset(offset).limit(page_size))
+        builds = result.scalars().all()
+        
+        build_responses = [
+            ImageBuildResponse(
+                id=b.id,
+                task_id=b.task_id,
+                tag=b.tag,
+                target_image_id=b.target_image_id,
+                dockerfile_path=b.dockerfile_path,
+                context_path=b.context_path,
+                build_args=b.build_args,
+                platform=b.platform,
+                status=b.status,
+                progress=b.progress,
+                progress_message=b.progress_message,
+                started_at=b.started_at,
+                completed_at=b.completed_at,
+                error_message=b.error_message,
+                image_size=b.image_size,
+                layers_count=b.layers_count,
+                user_id=b.user_id,
+                created_at=b.created_at,
+                updated_at=b.updated_at
+            )
+            for b in builds
+        ]
+        
+        total_pages = (total + page_size - 1) // page_size
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.LIST_BUILDS,
+            resource_type="build",
+            description=f"获取构建记录列表，共 {total} 条",
+            details={
+                "page": page,
+                "page_size": page_size,
+                "status": status,
+                "search": search,
+                "total": total
+            },
+            ip_address="internal",
+            user_agent="internal",
+            status="success"
+        )
+        
+        return ImageBuildListResponse(
+            builds=build_responses,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages
+        )
+        
+    except Exception as e:
+        log_error("list_builds", e)
+        raise
+
+
+@app.get("/api/builds/{build_id}", response_model=ImageBuildDetailResponse)
+async def get_build_detail(
+    build_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取构建详情（管理员）"""
+    try:
+        result = await db.execute(
+            select(ImageBuild).options(selectinload(ImageBuild.log))
+            .where(ImageBuild.id == build_id)
+        )
+        build = result.scalar_one_or_none()
+        
+        if not build:
+            raise HTTPException(status_code=404, detail="构建记录不存在")
+        
+        log_text = None
+        log_entries = None
+        if build.log:
+            log_text = build.log.logs
+            log_entries = build.log.log_entries
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.VIEW_BUILD_LOGS,
+            resource_type="build",
+            resource_id=str(build_id),
+            description=f"查看构建详情: {build.tag}",
+            details={
+                "build_id": build_id,
+                "tag": build.tag,
+                "status": build.status
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return ImageBuildDetailResponse(
+            id=build.id,
+            task_id=build.task_id,
+            tag=build.tag,
+            target_image_id=build.target_image_id,
+            dockerfile_path=build.dockerfile_path,
+            dockerfile_content=build.dockerfile_content,
+            context_path=build.context_path,
+            build_args=build.build_args,
+            platform=build.platform,
+            status=build.status,
+            progress=build.progress,
+            progress_message=build.progress_message,
+            started_at=build.started_at,
+            completed_at=build.completed_at,
+            error_message=build.error_message,
+            image_size=build.image_size,
+            layers_count=build.layers_count,
+            user_id=build.user_id,
+            created_at=build.created_at,
+            updated_at=build.updated_at,
+            log=log_text,
+            log_entries=log_entries
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("get_build_detail", e, build_id=build_id)
+        raise
+
+
+@app.get("/api/builds/{build_id}/logs", response_model=ImageBuildLogResponse)
+async def get_build_logs(
+    build_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取构建日志（管理员）"""
+    try:
+        result = await db.execute(
+            select(ImageBuild).options(selectinload(ImageBuild.log))
+            .where(ImageBuild.id == build_id)
+        )
+        build = result.scalar_one_or_none()
+        
+        if not build:
+            raise HTTPException(status_code=404, detail="构建记录不存在")
+        
+        if not build.log:
+            raise HTTPException(status_code=404, detail="构建日志不存在")
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.VIEW_BUILD_LOGS,
+            resource_type="build",
+            resource_id=str(build_id),
+            description=f"查看构建日志: {build.tag}",
+            details={
+                "build_id": build_id,
+                "tag": build.tag
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return ImageBuildLogResponse(
+            build_id=build.id,
+            logs=build.log.logs,
+            log_entries=build.log.log_entries or [],
+            created_at=build.log.created_at,
+            updated_at=build.log.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("get_build_logs", e, build_id=build_id)
+        raise
+
+
+@app.delete("/api/builds/{build_id}")
+async def delete_build(
+    build_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除构建记录（管理员）"""
+    try:
+        result = await db.execute(select(ImageBuild).where(ImageBuild.id == build_id))
+        build = result.scalar_one_or_none()
+        
+        if not build:
+            raise HTTPException(status_code=404, detail="构建记录不存在")
+        
+        tag = build.tag
+        
+        await db.delete(build)
+        await db.commit()
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.DELETE_BUILD,
+            resource_type="build",
+            resource_id=str(build_id),
+            description=f"删除构建记录: {tag}",
+            details={
+                "build_id": build_id,
+                "tag": tag
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "message": f"构建记录 {build_id} 删除成功"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("delete_build", e, build_id=build_id)
+        raise
+
+
+@app.get("/api/trivy/status")
+async def get_trivy_status(
+    current_admin: User = Depends(get_current_admin_user)
+):
+    """获取 Trivy 服务状态"""
+    return {
+        "success": True,
+        "available": trivy_service.is_available(),
+        "version": trivy_service.get_version() if trivy_service.is_available() else None
+    }
+
+
+@app.get("/api/build/service/status")
+async def get_build_service_status(
+    current_admin: User = Depends(get_current_admin_user)
+):
+    """获取构建服务状态"""
+    return {
+        "success": True,
+        "available": image_build_service.is_available()
+    }
 
 
 if __name__ == "__main__":

@@ -2,7 +2,10 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from enum import Enum
 from pydantic import BaseModel, Field
-from models import UserRole, ContainerPermission, AuditAction, ImageRegistryType
+from models import (
+    UserRole, ContainerPermission, AuditAction, ImageRegistryType,
+    ScanStatus, VulnerabilitySeverity, ScanType, BuildStatus
+)
 
 
 class UserBase(BaseModel):
@@ -441,3 +444,270 @@ class ImageDeleteRequest(BaseModel):
     image: str = Field(..., min_length=1, description="镜像名称或 ID")
     force: bool = Field(False, description="是否强制删除")
     noprune: bool = Field(False, description="是否不删除未使用的父镜像")
+
+
+class ImageScanRequest(BaseModel):
+    image: str = Field(..., min_length=1, description="镜像名称或 ID")
+    scan_type: ScanType = Field(ScanType.ALL, description="扫描类型：vulnerability, secret, config, all")
+    registry_id: Optional[int] = Field(None, description="使用的仓库配置 ID")
+    format: str = Field("json", description="输出格式")
+
+
+class ImageScanResponse(BaseModel):
+    id: int
+    task_id: Optional[str]
+    image_name: str
+    image_id: Optional[str]
+    scan_type: str
+    status: str
+    
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    unknown_count: int = 0
+    secret_count: int = 0
+    config_issue_count: int = 0
+    
+    progress: int = 0
+    progress_message: Optional[str]
+    error_message: Optional[str]
+    
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    user_id: Optional[int]
+    
+    created_at: datetime
+    updated_at: Optional[datetime]
+    
+    total_vulnerabilities: Optional[int] = None
+    severity_score: Optional[float] = None
+    
+    class Config:
+        from_attributes = True
+    
+    @classmethod
+    def from_orm_with_calculated(cls, obj):
+        data = {
+            'id': obj.id,
+            'task_id': obj.task_id,
+            'image_name': obj.image_name,
+            'image_id': obj.image_id,
+            'scan_type': obj.scan_type,
+            'status': obj.status,
+            'critical_count': obj.critical_count,
+            'high_count': obj.high_count,
+            'medium_count': obj.medium_count,
+            'low_count': obj.low_count,
+            'unknown_count': obj.unknown_count,
+            'secret_count': obj.secret_count,
+            'config_issue_count': obj.config_issue_count,
+            'progress': obj.progress,
+            'progress_message': obj.progress_message,
+            'error_message': obj.error_message,
+            'started_at': obj.started_at,
+            'completed_at': obj.completed_at,
+            'user_id': obj.user_id,
+            'created_at': obj.created_at,
+            'updated_at': obj.updated_at,
+            'total_vulnerabilities': obj.get_total_vulnerabilities(),
+            'severity_score': obj.get_severity_score()
+        }
+        return cls(**data)
+
+
+class ImageVulnerabilityResponse(BaseModel):
+    id: int
+    scan_id: int
+    
+    vulnerability_id: Optional[str]
+    cve_id: Optional[str]
+    ghsa_id: Optional[str]
+    
+    severity: str
+    title: Optional[str]
+    description: Optional[str]
+    
+    package_name: Optional[str]
+    installed_version: Optional[str]
+    fixed_version: Optional[str]
+    package_type: Optional[str]
+    
+    cvss_score: Optional[str]
+    cvss_vector: Optional[str]
+    
+    primary_url: Optional[str]
+    references: Optional[List[str]]
+    
+    published_date: Optional[datetime]
+    last_modified_date: Optional[datetime]
+    
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ImageSecretResponse(BaseModel):
+    id: int
+    scan_id: int
+    
+    secret_type: str
+    filename: Optional[str]
+    layer: Optional[str]
+    
+    match: Optional[str]
+    severity: str
+    category: Optional[str]
+    
+    description: Optional[str]
+    
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ImageConfigIssueResponse(BaseModel):
+    id: int
+    scan_id: int
+    
+    check_type: str
+    check_id: Optional[str]
+    
+    severity: str
+    category: Optional[str]
+    
+    message: Optional[str]
+    description: Optional[str]
+    remediation: Optional[str]
+    
+    location: Optional[Dict[str, Any]]
+    references: Optional[List[str]]
+    
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ImageScanDetailResponse(ImageScanResponse):
+    vulnerabilities: List[ImageVulnerabilityResponse] = []
+    secrets: List[ImageSecretResponse] = []
+    config_issues: List[ImageConfigIssueResponse] = []
+    scan_result: Optional[Dict[str, Any]] = None
+    scan_report: Optional[str] = None
+
+
+class ImageScanListResponse(BaseModel):
+    scans: List[ImageScanResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class ImageVulnerabilitySummary(BaseModel):
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    unknown: int = 0
+
+
+class ImageScanSummaryResponse(BaseModel):
+    total_scans: int
+    total_vulnerabilities: int
+    by_severity: ImageVulnerabilitySummary
+    recent_scans: List[ImageScanResponse]
+    top_images_by_severity: List[Dict[str, Any]]
+
+
+class ImageBuildRequest(BaseModel):
+    tag: str = Field(..., min_length=1, description="构建的镜像标签，如 my-image:latest")
+    dockerfile_path: Optional[str] = Field(None, description="Dockerfile 文件路径（相对于 context_path）")
+    dockerfile_content: Optional[str] = Field(None, description="Dockerfile 内容（如果不使用路径）")
+    context_path: Optional[str] = Field(None, description="构建上下文路径")
+    build_args: Optional[Dict[str, str]] = Field(None, description="构建参数")
+    platform: Optional[str] = Field(None, description="目标平台，如 linux/amd64, linux/arm64")
+    cache_from: Optional[List[str]] = Field(None, description="缓存来源镜像列表")
+    labels: Optional[Dict[str, str]] = Field(None, description="镜像标签")
+    pull: bool = Field(False, description="是否拉取最新基础镜像")
+    no_cache: bool = Field(False, description="是否不使用缓存")
+
+
+class ImageBuildResponse(BaseModel):
+    id: int
+    task_id: Optional[str]
+    
+    tag: str
+    target_image_id: Optional[str]
+    
+    dockerfile_path: Optional[str]
+    context_path: Optional[str]
+    build_args: Optional[Dict[str, Any]]
+    platform: Optional[str]
+    
+    status: str
+    progress: int
+    progress_message: Optional[str]
+    
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    error_message: Optional[str]
+    
+    image_size: Optional[int]
+    layers_count: Optional[int]
+    
+    user_id: Optional[int]
+    
+    created_at: datetime
+    updated_at: Optional[datetime]
+    
+    class Config:
+        from_attributes = True
+
+
+class ImageBuildDetailResponse(ImageBuildResponse):
+    dockerfile_content: Optional[str]
+    log: Optional[str]
+    log_entries: Optional[List[Dict[str, Any]]]
+
+
+class ImageBuildLogResponse(BaseModel):
+    build_id: int
+    logs: str
+    log_entries: List[Dict[str, Any]] = []
+    created_at: datetime
+    updated_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class ImageBuildListResponse(BaseModel):
+    builds: List[ImageBuildResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class VulnerabilityTrendItem(BaseModel):
+    date: str
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    unknown: int = 0
+    total: int = 0
+
+
+class ImageVulnerabilityTrendResponse(BaseModel):
+    trends: List[VulnerabilityTrendItem]
+    period: str
+    start_date: str
+    end_date: str
+
+
+

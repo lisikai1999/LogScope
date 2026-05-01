@@ -26,6 +26,37 @@ class ImageRegistryType(str, PyEnum):
     OTHER = "other"
 
 
+class ScanStatus(str, PyEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class VulnerabilitySeverity(str, PyEnum):
+    UNKNOWN = "unknown"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
+class ScanType(str, PyEnum):
+    VULNERABILITY = "vulnerability"
+    SECRET = "secret"
+    CONFIG = "config"
+    ALL = "all"
+
+
+class BuildStatus(str, PyEnum):
+    PENDING = "pending"
+    BUILDING = "building"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class AuditAction(str, PyEnum):
     LOGIN = "login"
     LOGOUT = "logout"
@@ -63,6 +94,14 @@ class AuditAction(str, PyEnum):
     UPDATE_REGISTRY = "update_registry"
     DELETE_REGISTRY = "delete_registry"
     LIST_REGISTRIES = "list_registries"
+    SCAN_IMAGE = "scan_image"
+    VIEW_SCAN_RESULT = "view_scan_result"
+    LIST_SCANS = "list_scans"
+    DELETE_SCAN = "delete_scan"
+    BUILD_IMAGE = "build_image"
+    VIEW_BUILD_LOGS = "view_build_logs"
+    LIST_BUILDS = "list_builds"
+    DELETE_BUILD = "delete_build"
     OTHER = "other"
 
 
@@ -330,3 +369,186 @@ def decrypt_on_load(target, context):
     在从数据库加载时自动解密敏感字段
     """
     target.decrypt_sensitive_fields()
+
+
+class ImageScan(Base):
+    __tablename__ = "image_scans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String(100), unique=True, index=True, nullable=True)
+    image_name = Column(String(500), index=True, nullable=False)
+    image_id = Column(String(100), index=True, nullable=True)
+    scan_type = Column(String(50), default=ScanType.ALL.value, nullable=False)
+    status = Column(String(20), default=ScanStatus.PENDING.value, nullable=False, index=True)
+    
+    critical_count = Column(Integer, default=0)
+    high_count = Column(Integer, default=0)
+    medium_count = Column(Integer, default=0)
+    low_count = Column(Integer, default=0)
+    unknown_count = Column(Integer, default=0)
+    secret_count = Column(Integer, default=0)
+    config_issue_count = Column(Integer, default=0)
+    
+    scan_result = Column(JSON, nullable=True)
+    scan_report = Column(Text, nullable=True)
+    
+    error_message = Column(Text, nullable=True)
+    progress = Column(Integer, default=0)
+    progress_message = Column(String(500), nullable=True)
+    
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    user = relationship("User", backref="image_scans")
+    vulnerabilities = relationship("ImageVulnerability", back_populates="scan", cascade="all, delete-orphan")
+    secrets = relationship("ImageSecret", back_populates="scan", cascade="all, delete-orphan")
+    config_issues = relationship("ImageConfigIssue", back_populates="scan", cascade="all, delete-orphan")
+    
+    def get_total_vulnerabilities(self) -> int:
+        return self.critical_count + self.high_count + self.medium_count + self.low_count + self.unknown_count
+    
+    def get_severity_score(self) -> float:
+        return (self.critical_count * 10) + (self.high_count * 5) + (self.medium_count * 2) + self.low_count
+
+
+class ImageVulnerability(Base):
+    __tablename__ = "image_vulnerabilities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("image_scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    vulnerability_id = Column(String(100), index=True, nullable=True)
+    cve_id = Column(String(100), index=True, nullable=True)
+    ghsa_id = Column(String(100), index=True, nullable=True)
+    
+    severity = Column(String(20), default=VulnerabilitySeverity.UNKNOWN.value, nullable=False, index=True)
+    title = Column(String(500), nullable=True)
+    description = Column(Text, nullable=True)
+    
+    package_name = Column(String(200), nullable=True)
+    installed_version = Column(String(100), nullable=True)
+    fixed_version = Column(String(100), nullable=True)
+    package_type = Column(String(50), nullable=True)
+    
+    cvss_score = Column(String(20), nullable=True)
+    cvss_vector = Column(String(500), nullable=True)
+    
+    primary_url = Column(String(500), nullable=True)
+    references = Column(JSON, nullable=True)
+    
+    published_date = Column(DateTime, nullable=True)
+    last_modified_date = Column(DateTime, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    scan = relationship("ImageScan", back_populates="vulnerabilities")
+
+
+class ImageSecret(Base):
+    __tablename__ = "image_secrets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("image_scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    secret_type = Column(String(100), nullable=False, index=True)
+    filename = Column(String(500), nullable=True)
+    layer = Column(String(100), nullable=True)
+    
+    match = Column(String(2000), nullable=True)
+    match_start_index = Column(Integer, nullable=True)
+    match_end_index = Column(Integer, nullable=True)
+    
+    severity = Column(String(20), default=VulnerabilitySeverity.HIGH.value, nullable=False)
+    category = Column(String(100), nullable=True)
+    
+    description = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    scan = relationship("ImageScan", back_populates="secrets")
+
+
+class ImageConfigIssue(Base):
+    __tablename__ = "image_config_issues"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scan_id = Column(Integer, ForeignKey("image_scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    check_type = Column(String(100), nullable=False, index=True)
+    check_id = Column(String(100), nullable=True)
+    
+    severity = Column(String(20), default=VulnerabilitySeverity.MEDIUM.value, nullable=False)
+    category = Column(String(100), nullable=True)
+    
+    message = Column(Text, nullable=True)
+    description = Column(Text, nullable=True)
+    remediation = Column(Text, nullable=True)
+    
+    location = Column(JSON, nullable=True)
+    references = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    scan = relationship("ImageScan", back_populates="config_issues")
+
+
+class ImageBuild(Base):
+    __tablename__ = "image_builds"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String(100), unique=True, index=True, nullable=True)
+    
+    tag = Column(String(500), nullable=False, index=True)
+    target_image_id = Column(String(100), nullable=True)
+    
+    dockerfile_path = Column(String(500), nullable=True)
+    dockerfile_content = Column(Text, nullable=True)
+    
+    context_path = Column(String(500), nullable=True)
+    build_args = Column(JSON, nullable=True)
+    build_kwargs = Column(JSON, nullable=True)
+    
+    platform = Column(String(100), nullable=True)
+    cache_from = Column(JSON, nullable=True)
+    cache_to = Column(String(500), nullable=True)
+    labels = Column(JSON, nullable=True)
+    
+    status = Column(String(20), default=BuildStatus.PENDING.value, nullable=False, index=True)
+    progress = Column(Integer, default=0)
+    progress_message = Column(String(500), nullable=True)
+    
+    log_id = Column(Integer, ForeignKey("image_build_logs.id", ondelete="SET NULL"), nullable=True)
+    
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, nullable=True)
+    
+    image_size = Column(Integer, nullable=True)
+    layers_count = Column(Integer, nullable=True)
+    
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    user = relationship("User", backref="image_builds")
+    log = relationship("ImageBuildLog", back_populates="build", uselist=False)
+
+
+class ImageBuildLog(Base):
+    __tablename__ = "image_build_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    build_id = Column(Integer, ForeignKey("image_builds.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    logs = Column(Text, nullable=True)
+    log_entries = Column(JSON, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    build = relationship("ImageBuild", back_populates="log")
