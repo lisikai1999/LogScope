@@ -15,6 +15,17 @@ class UserRole(str, PyEnum):
     USER = "user"
 
 
+class ImageRegistryType(str, PyEnum):
+    DOCKER_HUB = "docker_hub"
+    HARBOR = "harbor"
+    QUAY = "quay"
+    AWS_ECR = "aws_ecr"
+    ALIYUN_ACR = "aliyun_acr"
+    GITHUB_CONTAINER_REGISTRY = "github_container_registry"
+    GITLAB_CONTAINER_REGISTRY = "gitlab_container_registry"
+    OTHER = "other"
+
+
 class AuditAction(str, PyEnum):
     LOGIN = "login"
     LOGOUT = "logout"
@@ -40,6 +51,18 @@ class AuditAction(str, PyEnum):
     VIEW_IMAGE_LAYERS = "view_image_layers"
     UPDATE_SETTINGS = "update_settings"
     VIEW_AUDIT_LOGS = "view_audit_logs"
+    LIST_IMAGES = "list_images"
+    VIEW_IMAGE_INFO = "view_image_info"
+    VIEW_IMAGE_HISTORY = "view_image_history"
+    PULL_IMAGE = "pull_image"
+    PUSH_IMAGE = "push_image"
+    DELETE_IMAGE = "delete_image"
+    ADD_IMAGE_TAG = "add_image_tag"
+    REMOVE_IMAGE_TAG = "remove_image_tag"
+    CREATE_REGISTRY = "create_registry"
+    UPDATE_REGISTRY = "update_registry"
+    DELETE_REGISTRY = "delete_registry"
+    LIST_REGISTRIES = "list_registries"
     OTHER = "other"
 
 
@@ -167,6 +190,39 @@ class DockerHost(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def get_display_name(self) -> str:
+        return self.name
+
+
+class ImageRegistry(Base):
+    __tablename__ = "image_registries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, index=True, nullable=False, comment="仓库名称，用于显示")
+    registry_type = Column(String(50), nullable=False, comment="仓库类型：docker_hub, harbor, quay, aws_ecr, aliyun_acr, github_container_registry, gitlab_container_registry, other")
+    host = Column(String(255), nullable=True, comment="仓库地址，如 docker.io, harbor.example.com 等")
+    namespace = Column(String(255), nullable=True, comment="命名空间/组织名，可选")
+    username = Column(String(255), nullable=True, comment="用户名")
+    password = Column(Text, nullable=True, comment="密码/令牌，加密存储")
+    aws_access_key_id = Column(String(255), nullable=True, comment="AWS ECR 专用：Access Key ID")
+    aws_secret_access_key = Column(Text, nullable=True, comment="AWS ECR 专用：Secret Access Key")
+    aws_region = Column(String(50), nullable=True, comment="AWS ECR 专用：区域")
+    aliyun_access_key_id = Column(String(255), nullable=True, comment="阿里云 ACR 专用：Access Key ID")
+    aliyun_access_key_secret = Column(Text, nullable=True, comment="阿里云 ACR 专用：Access Key Secret")
+    aliyun_region = Column(String(50), nullable=True, comment="阿里云 ACR 专用：区域")
+    is_secure = Column(Boolean, default=True, comment="是否使用 HTTPS")
+    is_default = Column(Boolean, default=False, comment="是否为默认仓库")
+    is_active = Column(Boolean, default=True, nullable=False)
+    description = Column(Text, nullable=True)
+    config_json = Column(JSON, nullable=True, comment="额外配置，JSON 格式")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def get_registry_url(self) -> str:
+        if self.registry_type == ImageRegistryType.DOCKER_HUB.value:
+            return "docker.io"
+        return self.host or "docker.io"
 
     def get_display_name(self) -> str:
         return self.name

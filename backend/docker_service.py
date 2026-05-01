@@ -1357,6 +1357,778 @@ class DockerService:
                 raise
             raise ContainerOperationError(f"获取容器完整信息失败: {str(e)}")
     
+    def list_images(
+        self,
+        all: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """获取本地镜像列表
+        
+        参数：
+        - all: 是否显示中间层镜像
+        - page: 页码
+        - page_size: 每页数量
+        - search: 搜索关键词
+        
+        返回：
+        - total: 镜像总数
+        - page: 当前页码
+        - page_size: 每页数量
+        - total_pages: 总页数
+        - data: 当前页的镜像列表
+        """
+        if not self.docker_available:
+            return self._get_mock_images(all, page, page_size, search)
+        
+        try:
+            images = self.client.images.list(all=all)
+            result = []
+            
+            for image in images:
+                try:
+                    attrs = image.attrs
+                    config = attrs.get('Config', {})
+                    
+                    result.append({
+                        'id': image.id,
+                        'short_id': image.short_id,
+                        'tags': image.tags or [],
+                        'size': attrs.get('Size', 0),
+                        'virtual_size': attrs.get('VirtualSize', attrs.get('Size', 0)),
+                        'created': self._parse_timestamp_to_int(attrs.get('Created', '')),
+                        'created_at': attrs.get('Created', ''),
+                        'repo_tags': image.tags or [],
+                        'repo_digests': attrs.get('RepoDigests', []),
+                        'parent': attrs.get('Parent', ''),
+                        'labels': config.get('Labels', {}) if config else {},
+                        'architecture': attrs.get('Architecture', ''),
+                        'os': attrs.get('Os', ''),
+                        'docker_version': attrs.get('DockerVersion', '')
+                    })
+                except Exception as e:
+                    log_service_error("list_images", e, image_id=image.short_id)
+            
+            return self._paginate_images(result, page, page_size, search)
+        except Exception as e:
+            log_service_error("list_images", e, all=all, page=page, page_size=page_size, search=search)
+            return {
+                'total': 0,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': 0,
+                'data': []
+            }
+    
+    def _parse_timestamp_to_int(self, timestamp_str: str) -> int:
+        """将 ISO 时间戳解析为 Unix 时间戳（秒）"""
+        if not timestamp_str:
+            return 0
+        try:
+            from dateutil import parser
+            dt = parser.isoparse(timestamp_str)
+            return int(dt.timestamp())
+        except Exception:
+            return 0
+    
+    def _paginate_images(
+        self,
+        images: List[Dict[str, Any]],
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """对镜像列表进行分页和搜索处理"""
+        filtered_images = images
+        
+        if search:
+            search_lower = search.lower()
+            filtered_images = [
+                img for img in images
+                if (search_lower in ' '.join(img.get('tags', [])).lower() or
+                    search_lower in img.get('short_id', '').lower() or
+                    search_lower in ' '.join(img.get('repo_digests', [])).lower())
+            ]
+        
+        total = len(filtered_images)
+        total_pages = (total + page_size - 1) // page_size
+        
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        data = filtered_images[start_index:end_index]
+        
+        return {
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
+            'data': data
+        }
+    
+    def _get_mock_images(
+        self,
+        all: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """返回模拟的镜像数据"""
+        import time
+        
+        mock_images = [
+            {
+                'id': 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+                'short_id': 'abcdef123456',
+                'tags': ['nginx:latest', 'nginx:1.25'],
+                'size': 187000000,
+                'virtual_size': 187000000,
+                'created': int(time.time()) - 86400 * 10,
+                'created_at': '2024-01-10T00:00:00Z',
+                'repo_tags': ['nginx:latest', 'nginx:1.25'],
+                'repo_digests': ['nginx@sha256:abcdef1234567890...'],
+                'parent': '',
+                'labels': {'maintainer': 'NGINX Docker Maintainers'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            },
+            {
+                'id': 'sha256:abcdef0987654321abcdef0987654321abcdef0987654321abcdef0987654321',
+                'short_id': 'abcdef098765',
+                'tags': ['postgres:15', 'postgres:latest'],
+                'size': 412000000,
+                'virtual_size': 412000000,
+                'created': int(time.time()) - 86400 * 15,
+                'created_at': '2024-01-05T00:00:00Z',
+                'repo_tags': ['postgres:15', 'postgres:latest'],
+                'repo_digests': ['postgres@sha256:abcdef0987654321...'],
+                'parent': '',
+                'labels': {'maintainer': 'PostgreSQL Docker Maintainers'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            },
+            {
+                'id': 'sha256:abcdef1122334455abcdef1122334455abcdef1122334455abcdef1122334455',
+                'short_id': 'abcdef112233',
+                'tags': ['redis:alpine', 'redis:7'],
+                'size': 32000000,
+                'virtual_size': 32000000,
+                'created': int(time.time()) - 86400 * 5,
+                'created_at': '2024-01-15T00:00:00Z',
+                'repo_tags': ['redis:alpine', 'redis:7'],
+                'repo_digests': ['redis@sha256:abcdef1122334455...'],
+                'parent': '',
+                'labels': {'maintainer': 'Redis Docker Maintainers'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            },
+            {
+                'id': 'sha256:abcdef5566778899abcdef5566778899abcdef5566778899abcdef5566778899',
+                'short_id': 'abcdef556677',
+                'tags': ['node:18-alpine'],
+                'size': 178000000,
+                'virtual_size': 178000000,
+                'created': int(time.time()) - 86400 * 20,
+                'created_at': '2023-12-20T00:00:00Z',
+                'repo_tags': ['node:18-alpine'],
+                'repo_digests': ['node@sha256:abcdef5566778899...'],
+                'parent': '',
+                'labels': {'maintainer': 'Node.js Docker Team'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            }
+        ]
+        
+        if all:
+            mock_images.append({
+                'id': 'sha256:abcdef9900112233abcdef9900112233abcdef9900112233abcdef9900112233',
+                'short_id': 'abcdef990011',
+                'tags': [],
+                'size': 25000000,
+                'virtual_size': 25000000,
+                'created': int(time.time()) - 86400 * 30,
+                'created_at': '2023-12-10T00:00:00Z',
+                'repo_tags': [],
+                'repo_digests': [],
+                'parent': 'sha256:abcdef5566778899...',
+                'labels': {},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            })
+        
+        return self._paginate_images(mock_images, page, page_size, search)
+    
+    def get_image_info(self, image_name_or_id: str) -> Dict[str, Any]:
+        """获取镜像详情信息"""
+        if not self.docker_available:
+            return self._get_mock_image_info(image_name_or_id)
+        
+        try:
+            image = self.client.images.get(image_name_or_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image_name_or_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_image_info", e, image_name=image_name_or_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            attrs = image.attrs
+            config = attrs.get('Config', {})
+            rootfs = attrs.get('RootFS', {})
+            
+            layers_info = rootfs.get('Layers', [])
+            layers = [{'id': layer, 'size': 0} for layer in layers_info]
+            
+            history = image.history()
+            
+            return {
+                'id': image.id,
+                'short_id': image.short_id,
+                'tags': image.tags or [],
+                'size': attrs.get('Size', 0),
+                'virtual_size': attrs.get('VirtualSize', attrs.get('Size', 0)),
+                'created': self._parse_timestamp_to_int(attrs.get('Created', '')),
+                'created_at': attrs.get('Created', ''),
+                'repo_tags': image.tags or [],
+                'repo_digests': attrs.get('RepoDigests', []),
+                'parent': attrs.get('Parent', ''),
+                'labels': config.get('Labels', {}) if config else {},
+                'architecture': attrs.get('Architecture', ''),
+                'os': attrs.get('Os', ''),
+                'docker_version': attrs.get('DockerVersion', ''),
+                'layers': layers,
+                'config': {
+                    'env': config.get('Env', []) if config else [],
+                    'cmd': config.get('Cmd', []) if config else [],
+                    'entrypoint': config.get('Entrypoint', []) if config else [],
+                    'working_dir': config.get('WorkingDir', '') if config else '',
+                    'user': config.get('User', '') if config else '',
+                    'exposed_ports': list(config.get('ExposedPorts', {}).keys()) if config and config.get('ExposedPorts') else [],
+                    'volumes': list(config.get('Volumes', {}).keys()) if config and config.get('Volumes') else []
+                },
+                'history': [
+                    {
+                        'id': h.get('Id', ''),
+                        'created': h.get('Created', 0),
+                        'created_by': h.get('CreatedBy', ''),
+                        'size': h.get('Size', 0),
+                        'comment': h.get('Comment', ''),
+                        'tags': h.get('Tags', [])
+                    }
+                    for h in history
+                ]
+            }
+        except Exception as e:
+            log_service_error("get_image_info", e, image_name=image_name_or_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取镜像详情失败: {str(e)}")
+    
+    def _get_mock_image_info(self, image_name: str) -> Dict[str, Any]:
+        """返回模拟的镜像详情"""
+        import time
+        
+        layers = [
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000001', 'size': 77800000},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000002', 'size': 15600000},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000003', 'size': 2500000},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000004', 'size': 0},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000005', 'size': 0}
+        ]
+        
+        history = [
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000005',
+                'created': int(time.time()) - 86400 * 25,
+                'created_by': '/bin/sh -c #(nop) CMD [\"nginx\" \"-g\" \"daemon off;\"]',
+                'size': 0,
+                'comment': '',
+                'tags': ['nginx:latest', 'nginx:1.25']
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000004',
+                'created': int(time.time()) - 86400 * 26,
+                'created_by': '/bin/sh -c #(nop) EXPOSE 80',
+                'size': 0,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000003',
+                'created': int(time.time()) - 86400 * 27,
+                'created_by': '/bin/sh -c #(nop) COPY file:xyz...',
+                'size': 2500000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000002',
+                'created': int(time.time()) - 86400 * 28,
+                'created_by': '/bin/sh -c apt-get update && apt-get install -y nginx',
+                'size': 15600000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000001',
+                'created': int(time.time()) - 86400 * 30,
+                'created_by': '/bin/sh -c #(nop) ADD file:abcdef...',
+                'size': 77800000,
+                'comment': '',
+                'tags': []
+            }
+        ]
+        
+        return {
+            'id': 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+            'short_id': 'abcdef123456',
+            'tags': ['nginx:latest', 'nginx:1.25'],
+            'size': 187000000,
+            'virtual_size': 187000000,
+            'created': int(time.time()) - 86400 * 10,
+            'created_at': '2024-01-10T00:00:00Z',
+            'repo_tags': ['nginx:latest', 'nginx:1.25'],
+            'repo_digests': ['nginx@sha256:abcdef1234567890...'],
+            'parent': '',
+            'labels': {'maintainer': 'NGINX Docker Maintainers <docker-maint@nginx.com>'},
+            'architecture': 'amd64',
+            'os': 'linux',
+            'docker_version': '24.0.7',
+            'layers': layers,
+            'config': {
+                'env': ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'NGINX_VERSION=1.25.3'],
+                'cmd': ['nginx', '-g', 'daemon off;'],
+                'entrypoint': [],
+                'working_dir': '',
+                'user': '',
+                'exposed_ports': ['80/tcp'],
+                'volumes': []
+            },
+            'history': history
+        }
+    
+    def get_image_history(self, image_name_or_id: str) -> List[Dict[str, Any]]:
+        """获取镜像历史"""
+        if not self.docker_available:
+            return self._get_mock_image_history(image_name_or_id)
+        
+        try:
+            image = self.client.images.get(image_name_or_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image_name_or_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_image_history", e, image_name=image_name_or_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            history = image.history()
+            result = []
+            
+            for h in history:
+                result.append({
+                    'id': h.get('Id', ''),
+                    'created': h.get('Created', 0),
+                    'created_by': h.get('CreatedBy', ''),
+                    'size': h.get('Size', 0),
+                    'comment': h.get('Comment', ''),
+                    'tags': h.get('Tags', [])
+                })
+            
+            return result
+        except Exception as e:
+            log_service_error("get_image_history", e, image_name=image_name_or_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取镜像历史失败: {str(e)}")
+    
+    def _get_mock_image_history(self, image_name: str) -> List[Dict[str, Any]]:
+        """返回模拟的镜像历史"""
+        import time
+        
+        return [
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000005',
+                'created': int(time.time()) - 86400 * 25,
+                'created_by': '/bin/sh -c #(nop) CMD [\"nginx\" \"-g\" \"daemon off;\"]',
+                'size': 0,
+                'comment': '',
+                'tags': ['nginx:latest', 'nginx:1.25']
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000004',
+                'created': int(time.time()) - 86400 * 26,
+                'created_by': '/bin/sh -c #(nop) EXPOSE 80',
+                'size': 0,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000003',
+                'created': int(time.time()) - 86400 * 27,
+                'created_by': '/bin/sh -c #(nop) COPY file:xyz...',
+                'size': 2500000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000002',
+                'created': int(time.time()) - 86400 * 28,
+                'created_by': '/bin/sh -c apt-get update && apt-get install -y nginx',
+                'size': 15600000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000001',
+                'created': int(time.time()) - 86400 * 30,
+                'created_by': '/bin/sh -c #(nop) ADD file:abcdef...',
+                'size': 77800000,
+                'comment': '',
+                'tags': []
+            }
+        ]
+    
+    def pull_image(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        platform: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """拉取镜像
+        
+        参数：
+        - image: 镜像名称
+        - tag: 标签
+        - platform: 目标平台，如 linux/amd64, linux/arm64
+        - auth_config: 认证配置，包含 username 和 password
+        
+        返回：
+        - success: 是否成功
+        - image_id: 镜像 ID
+        - tags: 镜像标签
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_pull_result(image, tag)
+        
+        try:
+            pull_kwargs = {}
+            if tag:
+                pull_kwargs['tag'] = tag
+            if platform:
+                pull_kwargs['platform'] = platform
+            if auth_config:
+                pull_kwargs['auth_config'] = auth_config
+            
+            app_logger.info(f"[Pull Image] 开始拉取镜像: {image}:{tag or 'latest'}")
+            
+            pulled_image = self.client.images.pull(image, **pull_kwargs)
+            
+            app_logger.info(f"[Pull Image] 镜像拉取成功: {pulled_image.short_id}")
+            
+            return {
+                'success': True,
+                'image_id': pulled_image.id,
+                'short_id': pulled_image.short_id,
+                'tags': pulled_image.tags or [],
+                'message': f"镜像拉取成功: {pulled_image.short_id}"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}:{tag or 'latest'}")
+        except docker.errors.APIError as e:
+            log_service_error("pull_image", e, image=image, tag=tag)
+            raise DockerServiceError(f"拉取镜像失败: {str(e)}")
+        except Exception as e:
+            log_service_error("pull_image", e, image=image, tag=tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"拉取镜像失败: {str(e)}")
+    
+    def _get_mock_pull_result(self, image: str, tag: Optional[str] = None) -> Dict[str, Any]:
+        """返回模拟的拉取结果"""
+        import time
+        import random
+        
+        image_id = f"sha256:{''.join(random.choices('0123456789abcdef', k=64))}"
+        short_id = image_id[7:19]
+        full_tag = f"{tag or 'latest'}"
+        
+        return {
+            'success': True,
+            'image_id': image_id,
+            'short_id': short_id,
+            'tags': [f"{image}:{full_tag}"],
+            'message': f"镜像拉取成功: {short_id}"
+        }
+    
+    def push_image(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        target_image: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """推送镜像
+        
+        参数：
+        - image: 本地镜像名称或 ID
+        - tag: 目标标签
+        - target_image: 目标镜像名称，可选
+        - auth_config: 认证配置
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_push_result(image, tag, target_image)
+        
+        try:
+            push_kwargs = {}
+            if auth_config:
+                push_kwargs['auth_config'] = auth_config
+            
+            push_image = image
+            if target_image:
+                push_image = target_image
+            if tag:
+                push_image = f"{push_image}:{tag}"
+            
+            app_logger.info(f"[Push Image] 开始推送镜像: {push_image}")
+            
+            result = self.client.images.push(push_image, **push_kwargs)
+            
+            app_logger.info(f"[Push Image] 镜像推送成功: {push_image}")
+            
+            return {
+                'success': True,
+                'message': f"镜像推送成功: {push_image}"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}")
+        except docker.errors.APIError as e:
+            log_service_error("push_image", e, image=image, tag=tag)
+            raise DockerServiceError(f"推送镜像失败: {str(e)}")
+        except Exception as e:
+            log_service_error("push_image", e, image=image, tag=tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"推送镜像失败: {str(e)}")
+    
+    def _get_mock_push_result(self, image: str, tag: Optional[str] = None, target_image: Optional[str] = None) -> Dict[str, Any]:
+        """返回模拟的推送结果"""
+        push_image = target_image or image
+        if tag:
+            push_image = f"{push_image}:{tag}"
+        
+        return {
+            'success': True,
+            'message': f"镜像推送成功: {push_image}"
+        }
+    
+    def delete_image(
+        self,
+        image: str,
+        force: bool = False,
+        noprune: bool = False
+    ) -> Dict[str, Any]:
+        """删除镜像
+        
+        参数：
+        - image: 镜像名称或 ID
+        - force: 是否强制删除
+        - noprune: 是否不删除未使用的父镜像
+        
+        返回：
+        - success: 是否成功
+        - deleted: 删除的镜像列表
+        - untagged: 取消标签的镜像列表
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_delete_result(image, force, noprune)
+        
+        try:
+            app_logger.info(f"[Delete Image] 开始删除镜像: {image}, force={force}, noprune={noprune}")
+            
+            result = self.client.images.remove(image, force=force, noprune=noprune)
+            
+            deleted = []
+            untagged = []
+            
+            if result:
+                for item in result:
+                    if 'Deleted' in item:
+                        deleted.append(item['Deleted'])
+                    if 'Untagged' in item:
+                        untagged.append(item['Untagged'])
+            
+            app_logger.info(f"[Delete Image] 镜像删除成功: deleted={len(deleted)}, untagged={len(untagged)}")
+            
+            return {
+                'success': True,
+                'deleted': deleted,
+                'untagged': untagged,
+                'message': f"镜像删除成功：删除 {len(deleted)} 个，取消标签 {len(untagged)} 个"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}")
+        except docker.errors.APIError as e:
+            log_service_error("delete_image", e, image=image, force=force)
+            raise DockerServiceError(f"删除镜像失败: {str(e)}")
+        except Exception as e:
+            log_service_error("delete_image", e, image=image, force=force)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"删除镜像失败: {str(e)}")
+    
+    def _get_mock_delete_result(self, image: str, force: bool = False, noprune: bool = False) -> Dict[str, Any]:
+        """返回模拟的删除结果"""
+        import random
+        
+        deleted = []
+        untagged = []
+        
+        if random.random() > 0.3:
+            deleted.append(f"sha256:{''.join(random.choices('0123456789abcdef', k=64))}")
+        else:
+            untagged.append(f"{image}:latest")
+        
+        return {
+            'success': True,
+            'deleted': deleted,
+            'untagged': untagged,
+            'message': f"镜像删除成功：删除 {len(deleted)} 个，取消标签 {len(untagged)} 个"
+        }
+    
+    def add_image_tag(
+        self,
+        image: str,
+        new_tag: str,
+        repository: Optional[str] = None,
+        tag: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """为镜像添加标签
+        
+        参数：
+        - image: 源镜像名称或 ID
+        - new_tag: 新标签（完整格式：repository:tag）
+        - repository: 仓库名称（可选，与 tag 配合使用）
+        - tag: 标签名（可选，与 repository 配合使用）
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_tag_result(image, new_tag)
+        
+        try:
+            target_repository = new_tag
+            target_tag = None
+            
+            if repository and tag:
+                target_repository = repository
+                target_tag = tag
+            elif ':' in new_tag:
+                parts = new_tag.rsplit(':', 1)
+                if len(parts) == 2 and '/' not in parts[1]:
+                    target_repository = parts[0]
+                    target_tag = parts[1]
+            
+            app_logger.info(f"[Tag Image] 为镜像 {image} 添加标签: {new_tag}")
+            
+            result = self.client.images.get(image).tag(target_repository, target_tag)
+            
+            if result:
+                app_logger.info(f"[Tag Image] 标签添加成功: {new_tag}")
+                return {
+                    'success': True,
+                    'message': f"标签添加成功: {new_tag}"
+                }
+            else:
+                raise ContainerOperationError(f"标签添加失败: {new_tag}")
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}")
+        except docker.errors.APIError as e:
+            log_service_error("add_image_tag", e, image=image, new_tag=new_tag)
+            raise DockerServiceError(f"添加标签失败: {str(e)}")
+        except Exception as e:
+            log_service_error("add_image_tag", e, image=image, new_tag=new_tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"添加标签失败: {str(e)}")
+    
+    def _get_mock_tag_result(self, image: str, new_tag: str) -> Dict[str, Any]:
+        """返回模拟的标签操作结果"""
+        return {
+            'success': True,
+            'message': f"标签添加成功: {new_tag}"
+        }
+    
+    def remove_image_tag(
+        self,
+        image: str,
+        tag: str
+    ) -> Dict[str, Any]:
+        """删除镜像标签
+        
+        参数：
+        - image: 镜像名称或 ID
+        - tag: 要删除的标签（格式：repository:tag）
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_untag_result(image, tag)
+        
+        try:
+            app_logger.info(f"[Untag Image] 删除镜像标签: {tag}")
+            
+            result = self.client.images.remove(tag, noprune=True)
+            
+            untagged = []
+            if result:
+                for item in result:
+                    if 'Untagged' in item:
+                        untagged.append(item['Untagged'])
+            
+            if untagged:
+                app_logger.info(f"[Untag Image] 标签删除成功: {tag}")
+                return {
+                    'success': True,
+                    'untagged': untagged,
+                    'message': f"标签删除成功: {tag}"
+                }
+            else:
+                raise ContainerOperationError(f"标签删除失败或标签不存在: {tag}")
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像或标签不存在: {tag}")
+        except docker.errors.APIError as e:
+            log_service_error("remove_image_tag", e, image=image, tag=tag)
+            raise DockerServiceError(f"删除标签失败: {str(e)}")
+        except Exception as e:
+            log_service_error("remove_image_tag", e, image=image, tag=tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"删除标签失败: {str(e)}")
+    
+    def _get_mock_untag_result(self, image: str, tag: str) -> Dict[str, Any]:
+        """返回模拟的取消标签结果"""
+        return {
+            'success': True,
+            'untagged': [tag],
+            'message': f"标签删除成功: {tag}"
+        }
+    
     def get_image_layers(self, image_name_or_id: str) -> Dict[str, Any]:
         """获取镜像层信息"""
         if not self.docker_available:
@@ -2045,6 +2817,102 @@ class AsyncDockerService:
         return await asyncio.to_thread(
             self._sync.get_image_layers,
             image_name_or_id
+        )
+    
+    async def list_images_async(
+        self,
+        all: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.list_images,
+            all=all,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+    
+    async def get_image_info_async(self, image_name_or_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_image_info,
+            image_name_or_id
+        )
+    
+    async def get_image_history_async(self, image_name_or_id: str) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._sync.get_image_history,
+            image_name_or_id
+        )
+    
+    async def pull_image_async(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        platform: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.pull_image,
+            image=image,
+            tag=tag,
+            platform=platform,
+            auth_config=auth_config
+        )
+    
+    async def push_image_async(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        target_image: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.push_image,
+            image=image,
+            tag=tag,
+            target_image=target_image,
+            auth_config=auth_config
+        )
+    
+    async def delete_image_async(
+        self,
+        image: str,
+        force: bool = False,
+        noprune: bool = False
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.delete_image,
+            image=image,
+            force=force,
+            noprune=noprune
+        )
+    
+    async def add_image_tag_async(
+        self,
+        image: str,
+        new_tag: str,
+        repository: Optional[str] = None,
+        tag: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.add_image_tag,
+            image=image,
+            new_tag=new_tag,
+            repository=repository,
+            tag=tag
+        )
+    
+    async def remove_image_tag_async(
+        self,
+        image: str,
+        tag: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.remove_image_tag,
+            image=image,
+            tag=tag
         )
 
 

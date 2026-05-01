@@ -31,7 +31,9 @@ from models import (
     ContainerPermission,
     AuditAction,
     SystemSetting,
-    DockerHost
+    DockerHost,
+    ImageRegistry,
+    ImageRegistryType
 )
 from schemas import (
     UserLogin, Token, UserCreate, UserUpdate, UserResponse, 
@@ -56,7 +58,19 @@ from schemas import (
     LogFetchTaskRequest,
     ContainerBatchTaskRequest,
     MultiHostBatchTaskRequest,
-    BatchOperationItem as SchemaBatchOperationItem
+    BatchOperationItem as SchemaBatchOperationItem,
+    ImageRegistryBase,
+    ImageRegistryCreate,
+    ImageRegistryUpdate,
+    ImageRegistryResponse,
+    ImageResponse,
+    ImageDetailResponse,
+    ImageHistoryItem,
+    ImagePullRequest,
+    ImagePushRequest,
+    ImageTagAddRequest,
+    ImageTagRemoveRequest,
+    ImageDeleteRequest
 )
 from audit_service import (
     AuditService,
@@ -2960,6 +2974,759 @@ async def download_task_result(
                 "result": result
             }
         )
+
+
+async def get_registry_auth_config(
+    db: AsyncSession,
+    registry_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """获取仓库认证配置"""
+    if not registry_id:
+        return None
+    
+    result = await db.execute(select(ImageRegistry).where(ImageRegistry.id == registry_id))
+    registry = result.scalar_one_or_none()
+    
+    if not registry:
+        return None
+    
+    auth_config = {}
+    
+    if registry.username:
+        auth_config['username'] = registry.username
+    if registry.password:
+        auth_config['password'] = registry.password
+    
+    return auth_config if auth_config else None
+
+
+@app.get("/api/images")
+async def list_images(
+    all: bool = Query(False, description="是否显示中间层镜像"),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=1000, description="每页数量"),
+    search: Optional[str] = Query(None, description="搜索关键词（镜像名称、标签、ID）"),
+    request: Request = Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取本地镜像列表（管理员）"""
+    try:
+        result = await async_docker_service.list_images_async(
+            all=all,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.LIST_IMAGES,
+            resource_type="image",
+            description=f"获取镜像列表，搜索关键词: {search or '无'}",
+            details={
+                "all": all,
+                "page": page,
+                "page_size": page_size,
+                "search": search,
+                "total": result.get('total', 0)
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result.get('data', []),
+            "total": result.get('total', 0),
+            "page": result.get('page', page),
+            "page_size": result.get('page_size', page_size),
+            "total_pages": result.get('total_pages', 0)
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("list_images", e, all=all, page=page, page_size=page_size, search=search)
+        raise
+
+
+@app.get("/api/images/{image_name_or_id}")
+async def get_image_info(
+    image_name_or_id: str,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取镜像详情信息（管理员）"""
+    try:
+        result = await async_docker_service.get_image_info_async(image_name_or_id)
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.VIEW_IMAGE_INFO,
+            resource_type="image",
+            resource_id=image_name_or_id,
+            description=f"查看镜像详情: {image_name_or_id}",
+            details={
+                "image_id": result.get('id'),
+                "tags": result.get('tags', [])
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_image_info", e, image_name=image_name_or_id)
+        raise
+
+
+@app.get("/api/images/{image_name_or_id}/history")
+async def get_image_history(
+    image_name_or_id: str,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取镜像历史（管理员）"""
+    try:
+        history = await async_docker_service.get_image_history_async(image_name_or_id)
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.VIEW_IMAGE_HISTORY,
+            resource_type="image",
+            resource_id=image_name_or_id,
+            description=f"查看镜像历史: {image_name_or_id}",
+            details={
+                "history_count": len(history)
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": history,
+            "total": len(history)
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_image_history", e, image_name=image_name_or_id)
+        raise
+
+
+@app.post("/api/images/pull")
+async def pull_image(
+    pull_request: ImagePullRequest,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """拉取镜像（管理员，支持私有仓库认证）"""
+    try:
+        auth_config = await get_registry_auth_config(db, pull_request.registry_id)
+        
+        result = await async_docker_service.pull_image_async(
+            image=pull_request.image,
+            tag=pull_request.tag,
+            platform=pull_request.platform,
+            auth_config=auth_config
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.PULL_IMAGE,
+            resource_type="image",
+            resource_id=result.get('short_id', pull_request.image),
+            description=f"拉取镜像: {pull_request.image}:{pull_request.tag or 'latest'}",
+            details={
+                "image": pull_request.image,
+                "tag": pull_request.tag,
+                "platform": pull_request.platform,
+                "registry_id": pull_request.registry_id,
+                "image_id": result.get('image_id'),
+                "tags": result.get('tags', [])
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '镜像拉取成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("pull_image", e, image=pull_request.image, tag=pull_request.tag)
+        raise
+
+
+@app.post("/api/images/push")
+async def push_image(
+    push_request: ImagePushRequest,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """推送镜像（管理员）"""
+    try:
+        auth_config = await get_registry_auth_config(db, push_request.registry_id)
+        
+        result = await async_docker_service.push_image_async(
+            image=push_request.image,
+            tag=push_request.tag,
+            target_image=push_request.target_image,
+            auth_config=auth_config
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.PUSH_IMAGE,
+            resource_type="image",
+            resource_id=push_request.image,
+            description=f"推送镜像: {push_request.image}",
+            details={
+                "image": push_request.image,
+                "tag": push_request.tag,
+                "target_image": push_request.target_image,
+                "registry_id": push_request.registry_id
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '镜像推送成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("push_image", e, image=push_request.image, tag=push_request.tag)
+        raise
+
+
+@app.delete("/api/images/{image_name_or_id}")
+async def delete_image(
+    image_name_or_id: str,
+    force: bool = Query(False, description="是否强制删除"),
+    noprune: bool = Query(False, description="是否不删除未使用的父镜像"),
+    request: Request = Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除镜像（管理员）"""
+    try:
+        result = await async_docker_service.delete_image_async(
+            image=image_name_or_id,
+            force=force,
+            noprune=noprune
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.DELETE_IMAGE,
+            resource_type="image",
+            resource_id=image_name_or_id,
+            description=f"删除镜像: {image_name_or_id}",
+            details={
+                "force": force,
+                "noprune": noprune,
+                "deleted": result.get('deleted', []),
+                "untagged": result.get('untagged', [])
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '镜像删除成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("delete_image", e, image=image_name_or_id, force=force)
+        raise
+
+
+@app.post("/api/images/{image_name_or_id}/tags")
+async def add_image_tag(
+    image_name_or_id: str,
+    tag_request: ImageTagAddRequest,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """为镜像添加标签（管理员）"""
+    try:
+        result = await async_docker_service.add_image_tag_async(
+            image=image_name_or_id,
+            new_tag=tag_request.new_tag,
+            repository=tag_request.repository,
+            tag=tag_request.tag
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.ADD_IMAGE_TAG,
+            resource_type="image",
+            resource_id=image_name_or_id,
+            description=f"为镜像添加标签: {tag_request.new_tag}",
+            details={
+                "image": image_name_or_id,
+                "new_tag": tag_request.new_tag,
+                "repository": tag_request.repository,
+                "tag": tag_request.tag
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '标签添加成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("add_image_tag", e, image=image_name_or_id, new_tag=tag_request.new_tag)
+        raise
+
+
+@app.delete("/api/images/{image_name_or_id}/tags")
+async def remove_image_tag(
+    image_name_or_id: str,
+    tag: str = Query(..., description="要删除的标签"),
+    request: Request = Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除镜像标签（管理员）"""
+    try:
+        result = await async_docker_service.remove_image_tag_async(
+            image=image_name_or_id,
+            tag=tag
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.REMOVE_IMAGE_TAG,
+            resource_type="image",
+            resource_id=image_name_or_id,
+            description=f"删除镜像标签: {tag}",
+            details={
+                "image": image_name_or_id,
+                "tag": tag,
+                "untagged": result.get('untagged', [])
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '标签删除成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("remove_image_tag", e, image=image_name_or_id, tag=tag)
+        raise
+
+
+@app.get("/api/registries")
+async def list_registries(
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取镜像仓库配置列表（管理员）"""
+    try:
+        result = await db.execute(select(ImageRegistry).order_by(ImageRegistry.created_at.desc()))
+        registries = result.scalars().all()
+        
+        registry_responses = [
+            ImageRegistryResponse(
+                id=r.id,
+                name=r.name,
+                registry_type=r.registry_type,
+                host=r.host,
+                namespace=r.namespace,
+                username=r.username,
+                aws_access_key_id=r.aws_access_key_id,
+                aws_region=r.aws_region,
+                aliyun_access_key_id=r.aliyun_access_key_id,
+                aliyun_region=r.aliyun_region,
+                is_secure=r.is_secure,
+                is_default=r.is_default,
+                is_active=r.is_active,
+                description=r.description,
+                config_json=r.config_json,
+                created_at=r.created_at,
+                updated_at=r.updated_at
+            )
+            for r in registries
+        ]
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.LIST_REGISTRIES,
+            resource_type="registry",
+            description=f"获取镜像仓库配置列表",
+            details={
+                "total": len(registry_responses)
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": registry_responses,
+            "total": len(registry_responses)
+        }
+    except Exception as e:
+        log_error("list_registries", e)
+        raise
+
+
+@app.get("/api/registries/{registry_id}")
+async def get_registry(
+    registry_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取单个镜像仓库配置详情（管理员）"""
+    try:
+        result = await db.execute(select(ImageRegistry).where(ImageRegistry.id == registry_id))
+        registry = result.scalar_one_or_none()
+        
+        if not registry:
+            raise HTTPException(status_code=404, detail="仓库配置不存在")
+        
+        return {
+            "success": True,
+            "data": ImageRegistryResponse(
+                id=registry.id,
+                name=registry.name,
+                registry_type=registry.registry_type,
+                host=registry.host,
+                namespace=registry.namespace,
+                username=registry.username,
+                aws_access_key_id=registry.aws_access_key_id,
+                aws_region=registry.aws_region,
+                aliyun_access_key_id=registry.aliyun_access_key_id,
+                aliyun_region=registry.aliyun_region,
+                is_secure=registry.is_secure,
+                is_default=registry.is_default,
+                is_active=registry.is_active,
+                description=registry.description,
+                config_json=registry.config_json,
+                created_at=registry.created_at,
+                updated_at=registry.updated_at
+            )
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("get_registry", e, registry_id=registry_id)
+        raise
+
+
+@app.post("/api/registries")
+async def create_registry(
+    registry_data: ImageRegistryCreate,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """创建新的镜像仓库配置（管理员）"""
+    try:
+        name_result = await db.execute(select(ImageRegistry).where(ImageRegistry.name == registry_data.name))
+        existing = name_result.scalar_one_or_none()
+        
+        if existing:
+            raise HTTPException(status_code=400, detail="仓库名称已存在")
+        
+        new_registry = ImageRegistry(
+            name=registry_data.name,
+            registry_type=registry_data.registry_type.value,
+            host=registry_data.host,
+            namespace=registry_data.namespace,
+            username=registry_data.username,
+            password=registry_data.password,
+            aws_access_key_id=registry_data.aws_access_key_id,
+            aws_secret_access_key=registry_data.aws_secret_access_key,
+            aws_region=registry_data.aws_region,
+            aliyun_access_key_id=registry_data.aliyun_access_key_id,
+            aliyun_access_key_secret=registry_data.aliyun_access_key_secret,
+            aliyun_region=registry_data.aliyun_region,
+            is_secure=registry_data.is_secure,
+            is_default=registry_data.is_default,
+            is_active=registry_data.is_active,
+            description=registry_data.description,
+            config_json=registry_data.config_json
+        )
+        
+        db.add(new_registry)
+        await db.commit()
+        await db.refresh(new_registry)
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.CREATE_REGISTRY,
+            resource_type="registry",
+            resource_id=str(new_registry.id),
+            description=f"创建镜像仓库配置: {new_registry.name}",
+            details={
+                "registry_id": new_registry.id,
+                "registry_name": new_registry.name,
+                "registry_type": new_registry.registry_type,
+                "host": new_registry.host
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "message": "仓库配置创建成功",
+            "data": ImageRegistryResponse(
+                id=new_registry.id,
+                name=new_registry.name,
+                registry_type=new_registry.registry_type,
+                host=new_registry.host,
+                namespace=new_registry.namespace,
+                username=new_registry.username,
+                aws_access_key_id=new_registry.aws_access_key_id,
+                aws_region=new_registry.aws_region,
+                aliyun_access_key_id=new_registry.aliyun_access_key_id,
+                aliyun_region=new_registry.aliyun_region,
+                is_secure=new_registry.is_secure,
+                is_default=new_registry.is_default,
+                is_active=new_registry.is_active,
+                description=new_registry.description,
+                config_json=new_registry.config_json,
+                created_at=new_registry.created_at,
+                updated_at=new_registry.updated_at
+            )
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("create_registry", e, name=registry_data.name)
+        raise
+
+
+@app.put("/api/registries/{registry_id}")
+async def update_registry(
+    registry_id: int,
+    registry_data: ImageRegistryUpdate,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """更新镜像仓库配置（管理员）"""
+    try:
+        result = await db.execute(select(ImageRegistry).where(ImageRegistry.id == registry_id))
+        registry = result.scalar_one_or_none()
+        
+        if not registry:
+            raise HTTPException(status_code=404, detail="仓库配置不存在")
+        
+        if registry_data.name is not None and registry_data.name != registry.name:
+            name_result = await db.execute(select(ImageRegistry).where(ImageRegistry.name == registry_data.name))
+            existing = name_result.scalar_one_or_none()
+            if existing:
+                raise HTTPException(status_code=400, detail="仓库名称已存在")
+        
+        old_name = registry.name
+        changes = {}
+        
+        if registry_data.name is not None:
+            registry.name = registry_data.name
+            changes["name"] = {"old": old_name, "new": registry.name}
+        if registry_data.registry_type is not None:
+            registry.registry_type = registry_data.registry_type.value
+            changes["registry_type"] = {"old": registry.registry_type, "new": registry_data.registry_type.value}
+        if registry_data.host is not None:
+            registry.host = registry_data.host
+            changes["host"] = {"old": registry.host, "new": registry_data.host}
+        if registry_data.namespace is not None:
+            registry.namespace = registry_data.namespace
+        if registry_data.username is not None:
+            registry.username = registry_data.username
+        if registry_data.password is not None:
+            registry.password = registry_data.password
+        if registry_data.aws_access_key_id is not None:
+            registry.aws_access_key_id = registry_data.aws_access_key_id
+        if registry_data.aws_secret_access_key is not None:
+            registry.aws_secret_access_key = registry_data.aws_secret_access_key
+        if registry_data.aws_region is not None:
+            registry.aws_region = registry_data.aws_region
+        if registry_data.aliyun_access_key_id is not None:
+            registry.aliyun_access_key_id = registry_data.aliyun_access_key_id
+        if registry_data.aliyun_access_key_secret is not None:
+            registry.aliyun_access_key_secret = registry_data.aliyun_access_key_secret
+        if registry_data.aliyun_region is not None:
+            registry.aliyun_region = registry_data.aliyun_region
+        if registry_data.is_secure is not None:
+            registry.is_secure = registry_data.is_secure
+        if registry_data.is_default is not None:
+            registry.is_default = registry_data.is_default
+        if registry_data.is_active is not None:
+            registry.is_active = registry_data.is_active
+        if registry_data.description is not None:
+            registry.description = registry_data.description
+        if registry_data.config_json is not None:
+            registry.config_json = registry_data.config_json
+        
+        await db.commit()
+        await db.refresh(registry)
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.UPDATE_REGISTRY,
+            resource_type="registry",
+            resource_id=str(registry.id),
+            description=f"更新镜像仓库配置: {registry.name}",
+            details={
+                "registry_id": registry.id,
+                "registry_name": registry.name,
+                "changes": changes
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "message": "仓库配置更新成功",
+            "data": ImageRegistryResponse(
+                id=registry.id,
+                name=registry.name,
+                registry_type=registry.registry_type,
+                host=registry.host,
+                namespace=registry.namespace,
+                username=registry.username,
+                aws_access_key_id=registry.aws_access_key_id,
+                aws_region=registry.aws_region,
+                aliyun_access_key_id=registry.aliyun_access_key_id,
+                aliyun_region=registry.aliyun_region,
+                is_secure=registry.is_secure,
+                is_default=registry.is_default,
+                is_active=registry.is_active,
+                description=registry.description,
+                config_json=registry.config_json,
+                created_at=registry.created_at,
+                updated_at=registry.updated_at
+            )
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("update_registry", e, registry_id=registry_id)
+        raise
+
+
+@app.delete("/api/registries/{registry_id}")
+async def delete_registry(
+    registry_id: int,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除镜像仓库配置（管理员）"""
+    try:
+        result = await db.execute(select(ImageRegistry).where(ImageRegistry.id == registry_id))
+        registry = result.scalar_one_or_none()
+        
+        if not registry:
+            raise HTTPException(status_code=404, detail="仓库配置不存在")
+        
+        registry_name = registry.name
+        registry_type = registry.registry_type
+        registry_host = registry.host
+        
+        await db.delete(registry)
+        await db.commit()
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.DELETE_REGISTRY,
+            resource_type="registry",
+            resource_id=str(registry_id),
+            description=f"删除镜像仓库配置: {registry_name}",
+            details={
+                "registry_id": registry_id,
+                "registry_name": registry_name,
+                "registry_type": registry_type,
+                "host": registry_host
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "message": f"仓库配置 {registry_name} 删除成功"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("delete_registry", e, registry_id=registry_id)
+        raise
 
 
 if __name__ == "__main__":
