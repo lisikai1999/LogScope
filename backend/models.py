@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, UniqueConstraint, JSON, event
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, Session
 from enum import Enum as PyEnum
 import fnmatch
 
@@ -226,3 +226,107 @@ class ImageRegistry(Base):
 
     def get_display_name(self) -> str:
         return self.name
+
+    def encrypt_sensitive_fields(self):
+        """加密敏感字段"""
+        from encryption_service import encrypt
+        
+        if self.password and not self._is_encrypted(self.password):
+            self.password = encrypt(self.password)
+        
+        if self.aws_secret_access_key and not self._is_encrypted(self.aws_secret_access_key):
+            self.aws_secret_access_key = encrypt(self.aws_secret_access_key)
+        
+        if self.aliyun_access_key_secret and not self._is_encrypted(self.aliyun_access_key_secret):
+            self.aliyun_access_key_secret = encrypt(self.aliyun_access_key_secret)
+
+    def decrypt_sensitive_fields(self):
+        """解密敏感字段"""
+        from encryption_service import decrypt
+        
+        if self.password and self._is_encrypted(self.password):
+            decrypted = decrypt(self.password)
+            if decrypted:
+                self.password = decrypted
+        
+        if self.aws_secret_access_key and self._is_encrypted(self.aws_secret_access_key):
+            decrypted = decrypt(self.aws_secret_access_key)
+            if decrypted:
+                self.aws_secret_access_key = decrypted
+        
+        if self.aliyun_access_key_secret and self._is_encrypted(self.aliyun_access_key_secret):
+            decrypted = decrypt(self.aliyun_access_key_secret)
+            if decrypted:
+                self.aliyun_access_key_secret = decrypted
+
+    def _is_encrypted(self, value: str) -> bool:
+        """检查值是否已经加密（Fernet 加密的特征）"""
+        if not value:
+            return False
+        try:
+            import base64
+            decoded = base64.urlsafe_b64decode(value)
+            return len(decoded) > 0 and decoded[0] in [0x80, 0xC0, 0xE0, 0xF0]
+        except Exception:
+            return False
+
+    def get_decrypted_auth_config(self) -> Dict[str, Any]:
+        """获取解密后的认证配置（用于 Docker 认证）"""
+        from encryption_service import decrypt
+        
+        auth_config = {}
+        
+        if self.username:
+            auth_config['username'] = self.username
+        
+        if self.password:
+            if self._is_encrypted(self.password):
+                decrypted = decrypt(self.password)
+                if decrypted:
+                    auth_config['password'] = decrypted
+            else:
+                auth_config['password'] = self.password
+        
+        if self.aws_secret_access_key:
+            if self._is_encrypted(self.aws_secret_access_key):
+                decrypted = decrypt(self.aws_secret_access_key)
+                if decrypted:
+                    auth_config['aws_secret_access_key'] = decrypted
+            else:
+                auth_config['aws_secret_access_key'] = self.aws_secret_access_key
+        
+        if self.aliyun_access_key_secret:
+            if self._is_encrypted(self.aliyun_access_key_secret):
+                decrypted = decrypt(self.aliyun_access_key_secret)
+                if decrypted:
+                    auth_config['aliyun_access_key_secret'] = decrypted
+            else:
+                auth_config['aliyun_access_key_secret'] = self.aliyun_access_key_secret
+        
+        return auth_config
+
+
+@event.listens_for(ImageRegistry, 'before_insert')
+@event.listens_for(ImageRegistry, 'before_update')
+def encrypt_before_save(mapper, connection, target):
+    """
+    在插入和更新之前自动加密敏感字段
+    """
+    target.encrypt_sensitive_fields()
+
+
+@event.listens_for(ImageRegistry, 'after_insert')
+@event.listens_for(ImageRegistry, 'after_update')
+def decrypt_after_save(mapper, connection, target):
+    """
+    在插入和更新之后自动解密敏感字段（保持内存中的值为明文）
+    """
+    pass
+
+
+@event.listens_for(ImageRegistry, 'load')
+def decrypt_on_load(target, context):
+    """
+    在从数据库加载时自动解密敏感字段
+    """
+    target.decrypt_sensitive_fields()
