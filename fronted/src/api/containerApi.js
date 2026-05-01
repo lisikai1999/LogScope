@@ -203,12 +203,59 @@ const containerApi = {
 
 
 const imageApi = {
-  async getImageLayers(imageName) {
-    return get(`/api/images/${encodeURIComponent(imageName)}/layers`)
+  async getImages(params = {}) {
+    return get('/api/images', params)
   },
   
-  async getImageInfo(imageName) {
-    return get(`/api/images/${encodeURIComponent(imageName)}/info`)
+  async getImageInfo(imageNameOrId) {
+    return get(`/api/images/${encodeURIComponent(imageNameOrId)}`)
+  },
+  
+  async getImageHistory(imageNameOrId) {
+    return get(`/api/images/${encodeURIComponent(imageNameOrId)}/history`)
+  },
+  
+  async pullImage(data) {
+    return post('/api/images/pull', data)
+  },
+  
+  async pushImage(data) {
+    return post('/api/images/push', data)
+  },
+  
+  async deleteImage(imageNameOrId, params = {}) {
+    return del(`/api/images/${encodeURIComponent(imageNameOrId)}`, params)
+  },
+  
+  async addTag(imageNameOrId, data) {
+    return post(`/api/images/${encodeURIComponent(imageNameOrId)}/tags`, data)
+  },
+  
+  async removeTag(imageNameOrId, tag) {
+    return del(`/api/images/${encodeURIComponent(imageNameOrId)}/tags`, { tag })
+  }
+}
+
+
+const registryApi = {
+  async getRegistries() {
+    return get('/api/registries')
+  },
+  
+  async getRegistry(registryId) {
+    return get(`/api/registries/${registryId}`)
+  },
+  
+  async createRegistry(data) {
+    return post('/api/registries', data)
+  },
+  
+  async updateRegistry(registryId, data) {
+    return put(`/api/registries/${registryId}`, data)
+  },
+  
+  async deleteRegistry(registryId) {
+    return del(`/api/registries/${registryId}`)
   }
 }
 
@@ -355,6 +402,7 @@ export {
   del,
   containerApi,
   imageApi,
+  registryApi,
   dashboardApi,
   authApi,
   auditLogApi,
@@ -372,6 +420,7 @@ export default {
   del,
   containerApi,
   imageApi,
+  registryApi,
   dashboardApi,
   authApi,
   auditLogApi,
