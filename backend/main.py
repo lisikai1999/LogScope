@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, Session
 
 from docker_service import docker_service, async_docker_service
 from multi_docker_service import multi_docker_service, async_multi_docker_service

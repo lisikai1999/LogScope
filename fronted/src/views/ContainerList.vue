@@ -55,6 +55,20 @@
             >
               仓库配置
             </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/scans" 
+              class="btn btn-outline"
+            >
+              安全扫描
+            </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/builds" 
+              class="btn btn-outline"
+            >
+              镜像构建
+            </router-link>
             <button class="btn btn-outline" @click="fetchContainers">
               刷新
             </button>
