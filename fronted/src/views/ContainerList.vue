@@ -41,6 +41,20 @@
             >
               主机管理
             </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/images" 
+              class="btn btn-outline"
+            >
+              镜像管理
+            </router-link>
+            <router-link 
+              v-if="isAdmin" 
+              to="/registries" 
+              class="btn btn-outline"
+            >
+              仓库配置
+            </router-link>
             <button class="btn btn-outline" @click="fetchContainers">
               刷新
             </button>

@@ -7,6 +7,8 @@ import Login from '../views/Login.vue'
 import UserManagement from '../views/UserManagement.vue'
 import AuditLog from '../views/AuditLog.vue'
 import HostManagement from '../views/HostManagement.vue'
+import ImageManagement from '../views/ImageManagement.vue'
+import RegistryManagement from '../views/RegistryManagement.vue'
 
 
 const routes = [
@@ -56,6 +58,18 @@ const routes = [
     path: '/hosts',
     name: 'HostManagement',
     component: HostManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/images',
+    name: 'ImageManagement',
+    component: ImageManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/registries',
+    name: 'RegistryManagement',
+    component: RegistryManagement,
     meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]
