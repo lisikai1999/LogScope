@@ -1,102 +1,11 @@
 <template>
-  <div class="container-list">
-    <!-- Header -->
-    <header class="header">
-      <div class="container">
-        <div class="header-content">
-          <div class="logo">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-            </svg>
-            <div>
-              <h1>Docker 日志查看器</h1>
-              <p>容器管理</p>
-            </div>
-          </div>
-          <div class="header-actions">
-            <router-link to="/dashboard" class="btn btn-outline">
-              Dashboard
-            </router-link>
-            <router-link to="/multi-logs" class="btn btn-primary">
-              多容器日志聚合
-            </router-link>
-            <router-link 
-              v-if="isAdmin" 
-              to="/users" 
-              class="btn btn-outline"
-            >
-              用户管理
-            </router-link>
-            <router-link 
-              v-if="isAdmin" 
-              to="/audit-logs" 
-              class="btn btn-outline"
-            >
-              操作审计日志
-            </router-link>
-            <router-link 
-              v-if="isAdmin" 
-              to="/hosts" 
-              class="btn btn-outline"
-            >
-              主机管理
-            </router-link>
-            <router-link 
-              v-if="isAdmin" 
-              to="/images" 
-              class="btn btn-outline"
-            >
-              镜像管理
-            </router-link>
-            <router-link 
-              v-if="isAdmin" 
-              to="/registries" 
-              class="btn btn-outline"
-            >
-              仓库配置
-            </router-link>
-            <router-link 
-              v-if="isAdmin" 
-              to="/scans" 
-              class="btn btn-outline"
-            >
-              安全扫描
-            </router-link>
-            <router-link 
-              v-if="isAdmin" 
-              to="/builds" 
-              class="btn btn-outline"
-            >
-              镜像构建
-            </router-link>
-            <button class="btn btn-outline" @click="fetchContainers">
-              刷新
-            </button>
-            <div class="user-menu">
-              <span class="user-info">
-                <span class="user-avatar">{{ currentUser?.username?.charAt(0).toUpperCase() }}</span>
-                <span class="user-name">{{ currentUser?.username }}</span>
-                <span class="user-role" :class="isAdmin ? 'role-admin' : 'role-user'">
-                  {{ isAdmin ? '管理员' : '用户' }}
-                </span>
-              </span>
-              <button class="btn btn-ghost btn-sm" @click="logout" title="退出登录">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                  <polyline points="16 17 21 12 16 7"></polyline>
-                  <line x1="21" y1="12" x2="9" y2="12"></line>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <!-- Main Content -->
-    <main class="main-content">
-      <div class="container">
-        <div class="card">
+  <AppLayout 
+    :currentUser="currentUser"
+    :page-title="'容器管理'"
+    @refresh="fetchContainers"
+    @logout="logout"
+  >
+    <div class="card">
           <!-- Controls -->
           <div class="controls">
             <div class="search-box">
@@ -390,8 +299,6 @@
             </div>
           </div>
         </div>
-      </div>
-    </main>
 
     <!-- Container Details Modal -->
     <div v-if="showDetailsModal" class="modal-overlay" @click.self="closeDetailsModal">
@@ -885,7 +792,7 @@
     <div v-if="toastMessage" class="toast" :class="toastType">
       {{ toastMessage }}
     </div>
-  </div>
+  </AppLayout>
 </template>
 
 <script setup>
@@ -895,6 +802,7 @@ import axios from 'axios'
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts'
 import { useAuth } from '../composables/useAuth'
 import { hostApi } from '../api/containerApi'
+import AppLayout from '../components/AppLayout.vue'
 
 const router = useRouter()
 const { register } = useKeyboardShortcuts('container-list')
