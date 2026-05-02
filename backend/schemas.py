@@ -710,4 +710,119 @@ class ImageVulnerabilityTrendResponse(BaseModel):
     end_date: str
 
 
+class NetworkDriver(str, Enum):
+    BRIDGE = "bridge"
+    HOST = "host"
+    OVERLAY = "overlay"
+    MACVLAN = "macvlan"
+    NONE = "none"
+
+
+class NetworkIPAMConfig(BaseModel):
+    subnet: Optional[str] = Field(None, description="子网，如 172.20.0.0/16")
+    iprange: Optional[str] = Field(None, description="IP 范围，如 172.20.10.0/24")
+    gateway: Optional[str] = Field(None, description="网关，如 172.20.0.1")
+    aux_addresses: Optional[Dict[str, str]] = Field(None, description="辅助地址")
+
+
+class NetworkIPAM(BaseModel):
+    driver: Optional[str] = Field("default", description="IPAM 驱动")
+    config: Optional[List[NetworkIPAMConfig]] = Field(None, description="IPAM 配置列表")
+    options: Optional[Dict[str, str]] = Field(None, description="IPAM 选项")
+
+
+class NetworkContainer(BaseModel):
+    container_id: str = Field(..., description="容器 ID")
+    container_name: str = Field(..., description="容器名称")
+    ip_address: Optional[str] = Field(None, description="IP 地址")
+    mac_address: Optional[str] = Field(None, description="MAC 地址")
+    ipv6_address: Optional[str] = Field(None, description="IPv6 地址")
+    network_aliases: Optional[List[str]] = Field(None, description="网络别名")
+
+
+class NetworkBase(BaseModel):
+    id: str = Field(..., description="网络 ID")
+    name: str = Field(..., description="网络名称")
+    driver: str = Field(..., description="驱动类型")
+    scope: Optional[str] = Field(None, description="作用域")
+    created: Optional[str] = Field(None, description="创建时间")
+    internal: bool = Field(False, description="是否为内部网络")
+    enable_ipv6: bool = Field(False, description="是否启用 IPv6")
+    labels: Optional[Dict[str, str]] = Field(None, description="标签")
+
+
+class NetworkResponse(NetworkBase):
+    subnet: Optional[str] = Field(None, description="子网")
+    gateway: Optional[str] = Field(None, description="网关")
+    container_count: int = Field(0, description="连接的容器数量")
+    is_default: bool = Field(False, description="是否为默认网络")
+
+
+class NetworkDetailResponse(NetworkResponse):
+    ipam: Optional[NetworkIPAM] = Field(None, description="IPAM 配置")
+    containers: Optional[List[NetworkContainer]] = Field(None, description="连接的容器列表")
+    options: Optional[Dict[str, str]] = Field(None, description="网络选项")
+    attachable: bool = Field(False, description="是否可附加")
+    ingress: bool = Field(False, description="是否为 ingress 网络")
+    config_from: Optional[Dict[str, Any]] = Field(None, description="配置来源")
+    config_only: bool = Field(False, description="是否仅配置")
+
+
+class NetworkListResponse(BaseModel):
+    networks: List[NetworkResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class NetworkCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, description="网络名称")
+    driver: NetworkDriver = Field(NetworkDriver.BRIDGE, description="网络驱动类型")
+    check_duplicate: bool = Field(True, description="检查重复检查")
+    internal: bool = Field(False, description="是否为内部网络")
+    enable_ipv6: bool = Field(False, description="是否启用 IPv6")
+    attachable: bool = Field(False, description="是否可附加")
+    ingress: bool = Field(False, description="是否为 ingress 网络")
+    ipam: Optional[NetworkIPAM] = Field(None, description="IPAM 配置")
+    options: Optional[Dict[str, str]] = Field(None, description="网络选项")
+    labels: Optional[Dict[str, str]] = Field(None, description="标签")
+
+
+class NetworkConnect(BaseModel):
+    container_id: str = Field(..., description="容器 ID 或名称")
+    ip_address: Optional[str] = Field(None, description="指定 IP 地址")
+    ipv6_address: Optional[str] = Field(None, description="指定 IPv6 地址")
+    network_aliases: Optional[List[str]] = Field(None, description="网络别名")
+    links: Optional[List[str]] = Field(None, description="链接到其他容器")
+    driver_opt: Optional[Dict[str, str]] = Field(None, description="驱动选项")
+
+
+class NetworkDisconnect(BaseModel):
+    container_id: str = Field(..., description="容器 ID 或名称")
+    force: bool = Field(False, description="是否强制断开")
+
+
+class NetworkPortMapping(BaseModel):
+    container_port: str = Field(..., description="容器端口，如 80/tcp")
+    host_ip: Optional[str] = Field("0.0.0.0", description="主机 IP")
+    host_port: Optional[str] = Field(None, description="主机端口")
+
+
+class NetworkAlias(BaseModel):
+    network_name: str = Field(..., description="网络名称")
+    aliases: List[str] = Field(..., description="别名列表")
+
+
+class NetworkDNSConfig(BaseModel):
+    dns_servers: Optional[List[str]] = Field(None, description="DNS 服务器列表")
+    dns_search: Optional[List[str]] = Field(None, description="DNS 搜索域")
+    dns_options: Optional[List[str]] = Field(None, description="DNS 选项")
+
+
+class NetworkWithHost(NetworkBase):
+    host_id: int = Field(..., description="主机 ID")
+    host_name: str = Field(..., description="主机名称")
+
+
 

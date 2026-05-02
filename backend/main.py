@@ -95,7 +95,19 @@ from schemas import (
     ImageVulnerabilityResponse,
     ImageSecretResponse,
     ImageConfigIssueResponse,
-    ImageVulnerabilitySummary
+    ImageVulnerabilitySummary,
+    NetworkDriver,
+    NetworkIPAMConfig,
+    NetworkIPAM,
+    NetworkContainer,
+    NetworkBase,
+    NetworkResponse,
+    NetworkDetailResponse,
+    NetworkListResponse,
+    NetworkCreate,
+    NetworkConnect,
+    NetworkDisconnect,
+    NetworkWithHost
 )
 from audit_service import (
     AuditService,
@@ -4861,6 +4873,299 @@ async def get_build_service_status(
         "success": True,
         "available": image_build_service.is_available()
     }
+
+
+@app.get("/api/networks")
+async def list_networks(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=1000, description="每页数量"),
+    search: Optional[str] = Query(None, description="搜索关键词（网络名称、ID）"),
+    driver: Optional[str] = Query(None, description="驱动类型过滤 (bridge/host/overlay/macvlan/none)"),
+    request: Request = Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取网络列表（管理员）"""
+    try:
+        result = await async_docker_service.list_networks_async(
+            page=page,
+            page_size=page_size,
+            search=search,
+            driver=driver
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.LIST_CONTAINERS,
+            resource_type="network",
+            description=f"获取网络列表，搜索关键词: {search or '无'}",
+            details={
+                "page": page,
+                "page_size": page_size,
+                "search": search,
+                "driver": driver,
+                "total": result.get('total', 0)
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result.get('data', []),
+            "total": result.get('total', 0),
+            "page": result.get('page', page),
+            "page_size": result.get('page_size', page_size),
+            "total_pages": result.get('total_pages', 0)
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("list_networks", e, page=page, page_size=page_size, search=search, driver=driver)
+        raise
+
+
+@app.get("/api/networks/{network_id}")
+async def get_network_info(
+    network_id: str,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取网络详情信息（管理员）"""
+    try:
+        result = await async_docker_service.get_network_info_async(network_id)
+        
+        if not result:
+            raise ContainerNotFoundError(f"网络不存在: {network_id}")
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.VIEW_CONTAINER_INFO,
+            resource_type="network",
+            resource_id=network_id,
+            description=f"查看网络详情: {network_id}",
+            details={
+                "network_id": network_id,
+                "network_name": result.get('name')
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_network_info", e, network_id=network_id)
+        raise
+
+
+@app.post("/api/networks")
+async def create_network(
+    network_data: NetworkCreate,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """创建网络（管理员）"""
+    try:
+        ipam_dict = None
+        if network_data.ipam:
+            ipam_dict = network_data.ipam.model_dump()
+        
+        result = await async_docker_service.create_network_async(
+            name=network_data.name,
+            driver=network_data.driver.value,
+            check_duplicate=network_data.check_duplicate,
+            internal=network_data.internal,
+            enable_ipv6=network_data.enable_ipv6,
+            attachable=network_data.attachable,
+            ingress=network_data.ingress,
+            ipam=ipam_dict,
+            options=network_data.options,
+            labels=network_data.labels
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.CREATE_PERMISSION,
+            resource_type="network",
+            resource_id=result.get('network_id'),
+            description=f"创建网络: {network_data.name}",
+            details={
+                "network_name": network_data.name,
+                "driver": network_data.driver.value,
+                "internal": network_data.internal,
+                "enable_ipv6": network_data.enable_ipv6
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '网络创建成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("create_network", e, name=network_data.name, driver=network_data.driver)
+        raise
+
+
+@app.delete("/api/networks/{network_id}")
+async def delete_network(
+    network_id: str,
+    force: bool = Query(False, description="是否强制删除（即使有容器连接）"),
+    request: Request = Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除网络（管理员）"""
+    try:
+        result = await async_docker_service.delete_network_async(
+            network_id=network_id,
+            force=force
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.DELETE_PERMISSION,
+            resource_type="network",
+            resource_id=network_id,
+            description=f"删除网络: {network_id}",
+            details={
+                "network_id": network_id,
+                "force": force
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '网络删除成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("delete_network", e, network_id=network_id, force=force)
+        raise
+
+
+@app.post("/api/networks/{network_id}/connect")
+async def connect_container_to_network(
+    network_id: str,
+    connect_data: NetworkConnect,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """将容器连接到网络（管理员）"""
+    try:
+        result = await async_docker_service.connect_container_to_network_async(
+            network_id=network_id,
+            container_id=connect_data.container_id,
+            ip_address=connect_data.ip_address,
+            ipv6_address=connect_data.ipv6_address,
+            network_aliases=connect_data.network_aliases,
+            links=connect_data.links,
+            driver_opt=connect_data.driver_opt
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.UPDATE_PERMISSION,
+            resource_type="network",
+            resource_id=network_id,
+            description=f"将容器 {connect_data.container_id} 连接到网络 {network_id}",
+            details={
+                "network_id": network_id,
+                "container_id": connect_data.container_id,
+                "ip_address": connect_data.ip_address,
+                "network_aliases": connect_data.network_aliases
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '容器已成功连接到网络')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("connect_container_to_network", e, network_id=network_id, container_id=connect_data.container_id)
+        raise
+
+
+@app.post("/api/networks/{network_id}/disconnect")
+async def disconnect_container_from_network(
+    network_id: str,
+    disconnect_data: NetworkDisconnect,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """将容器从网络断开（管理员）"""
+    try:
+        result = await async_docker_service.disconnect_container_from_network_async(
+            network_id=network_id,
+            container_id=disconnect_data.container_id,
+            force=disconnect_data.force
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.UPDATE_PERMISSION,
+            resource_type="network",
+            resource_id=network_id,
+            description=f"将容器 {disconnect_data.container_id} 从网络 {network_id} 断开",
+            details={
+                "network_id": network_id,
+                "container_id": disconnect_data.container_id,
+                "force": disconnect_data.force
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', '容器已成功从网络断开')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("disconnect_container_from_network", e, network_id=network_id, container_id=disconnect_data.container_id)
+        raise
 
 
 if __name__ == "__main__":

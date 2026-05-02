@@ -852,6 +852,349 @@ class DockerHostClient:
             if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
                 raise
             raise ContainerOperationError(f"获取容器统计信息失败: {str(e)}")
+    
+    def list_networks(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None,
+        driver: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """获取主机上的网络列表"""
+        if not self.is_connected():
+            return []
+        
+        try:
+            filters = {}
+            if driver:
+                filters['driver'] = [driver]
+            
+            networks = self.client.networks.list(filters=filters)
+            result = []
+            
+            for network in networks:
+                try:
+                    attrs = network.attrs
+                    ipam_config = attrs.get('IPAM', {}).get('Config', [])
+                    first_ipam = ipam_config[0] if ipam_config else {}
+                    
+                    containers = attrs.get('Containers', {})
+                    container_count = len(containers) if containers else 0
+                    
+                    default_networks = ['bridge', 'host', 'none']
+                    is_default = network.name in default_networks
+                    
+                    result.append({
+                        'id': network.id,
+                        'name': network.name,
+                        'driver': attrs.get('Driver', ''),
+                        'scope': attrs.get('Scope', ''),
+                        'created': attrs.get('Created', ''),
+                        'internal': attrs.get('Internal', False),
+                        'enable_ipv6': attrs.get('EnableIPv6', False),
+                        'labels': attrs.get('Labels', {}),
+                        'subnet': first_ipam.get('Subnet', ''),
+                        'gateway': first_ipam.get('Gateway', ''),
+                        'container_count': container_count,
+                        'is_default': is_default,
+                        'host_id': self.host_id,
+                        'host_name': self.host_name
+                    })
+                except Exception as e:
+                    log_service_error("list_networks", e, network_id=network.id[:12] if network.id else "unknown")
+            
+            return result
+        except Exception as e:
+            log_service_error("list_networks", e, host_id=self.host_id, host_name=self.host_name)
+            return []
+    
+    def get_network_info(self, network_id: str) -> Optional[Dict[str, Any]]:
+        """获取网络详情信息"""
+        if not self.is_connected():
+            return None
+        
+        try:
+            network = self.client.networks.get(network_id)
+        except docker.errors.NotFound:
+            return None
+        except docker.errors.APIError as e:
+            log_service_error("get_network_info", e, network_id=network_id)
+            return None
+        
+        try:
+            attrs = network.attrs
+            ipam = attrs.get('IPAM', {})
+            ipam_config = ipam.get('Config', [])
+            
+            containers_data = []
+            containers = attrs.get('Containers', {})
+            if containers:
+                for container_id, container_info in containers.items():
+                    containers_data.append({
+                        'container_id': container_id,
+                        'container_name': container_info.get('Name', '').lstrip('/'),
+                        'ip_address': container_info.get('IPv4Address', '').split('/')[0] if container_info.get('IPv4Address') else '',
+                        'mac_address': container_info.get('MacAddress', ''),
+                        'ipv6_address': container_info.get('IPv6Address', '').split('/')[0] if container_info.get('IPv6Address') else '',
+                        'network_aliases': container_info.get('Aliases', [])
+                    })
+            
+            first_ipam = ipam_config[0] if ipam_config else {}
+            default_networks = ['bridge', 'host', 'none']
+            is_default = network.name in default_networks
+            
+            return {
+                'id': network.id,
+                'name': network.name,
+                'driver': attrs.get('Driver', ''),
+                'scope': attrs.get('Scope', ''),
+                'created': attrs.get('Created', ''),
+                'internal': attrs.get('Internal', False),
+                'enable_ipv6': attrs.get('EnableIPv6', False),
+                'labels': attrs.get('Labels', {}),
+                'subnet': first_ipam.get('Subnet', ''),
+                'gateway': first_ipam.get('Gateway', ''),
+                'container_count': len(containers_data),
+                'is_default': is_default,
+                'ipam': {
+                    'driver': ipam.get('Driver', 'default'),
+                    'config': [
+                        {
+                            'subnet': c.get('Subnet', ''),
+                            'iprange': c.get('IPRange', ''),
+                            'gateway': c.get('Gateway', ''),
+                            'aux_addresses': c.get('AuxiliaryAddresses', {})
+                        }
+                        for c in ipam_config
+                    ],
+                    'options': ipam.get('Options', {})
+                },
+                'containers': containers_data,
+                'options': attrs.get('Options', {}),
+                'attachable': attrs.get('Attachable', False),
+                'ingress': attrs.get('Ingress', False),
+                'host_id': self.host_id,
+                'host_name': self.host_name
+            }
+        except Exception as e:
+            log_service_error("get_network_info", e, network_id=network_id)
+            return None
+    
+    def create_network(
+        self,
+        name: str,
+        driver: str = 'bridge',
+        check_duplicate: bool = True,
+        internal: bool = False,
+        enable_ipv6: bool = False,
+        attachable: bool = False,
+        ingress: bool = False,
+        ipam: Optional[Dict[str, Any]] = None,
+        options: Optional[Dict[str, str]] = None,
+        labels: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """创建网络"""
+        if not self.is_connected():
+            raise DockerServiceError(f"Docker 主机 {self.host_name} 不可用")
+        
+        try:
+            create_kwargs = {
+                'name': name,
+                'driver': driver,
+                'check_duplicate': check_duplicate,
+                'internal': internal,
+                'enable_ipv6': enable_ipv6,
+            }
+            
+            if attachable:
+                create_kwargs['attachable'] = attachable
+            if ingress:
+                create_kwargs['ingress'] = ingress
+            if options:
+                create_kwargs['options'] = options
+            if labels:
+                create_kwargs['labels'] = labels
+            
+            if ipam:
+                ipam_config = []
+                for config in ipam.get('config', []):
+                    ipam_config_dict = {}
+                    if config.get('subnet'):
+                        ipam_config_dict['Subnet'] = config['subnet']
+                    if config.get('iprange'):
+                        ipam_config_dict['IPRange'] = config['iprange']
+                    if config.get('gateway'):
+                        ipam_config_dict['Gateway'] = config['gateway']
+                    if config.get('aux_addresses'):
+                        ipam_config_dict['AuxiliaryAddresses'] = config['aux_addresses']
+                    if ipam_config_dict:
+                        ipam_config.append(ipam_config_dict)
+                
+                if ipam_config or ipam.get('driver') or ipam.get('options'):
+                    ipam_pool = docker.types.IPAMPool() if not ipam_config else None
+                    if ipam_config:
+                        ipam_pool = docker.types.IPAMPool(
+                            subnet=ipam_config[0].get('Subnet'),
+                            iprange=ipam_config[0].get('IPRange'),
+                            gateway=ipam_config[0].get('Gateway'),
+                            aux_addresses=ipam_config[0].get('AuxiliaryAddresses')
+                        )
+                    
+                    ipam_configs = [ipam_pool] if ipam_pool else []
+                    for i in range(1, len(ipam_config)):
+                        pool = docker.types.IPAMPool(
+                            subnet=ipam_config[i].get('Subnet'),
+                            iprange=ipam_config[i].get('IPRange'),
+                            gateway=ipam_config[i].get('Gateway'),
+                            aux_addresses=ipam_config[i].get('AuxiliaryAddresses')
+                        )
+                        ipam_configs.append(pool)
+                    
+                    create_kwargs['ipam'] = docker.types.IPAMConfig(
+                        driver=ipam.get('driver', 'default'),
+                        pool_configs=ipam_configs,
+                        options=ipam.get('options')
+                    )
+            
+            network = self.client.networks.create(**create_kwargs)
+            
+            return {
+                'success': True,
+                'network_id': network.id,
+                'short_id': network.short_id,
+                'name': network.name,
+                'host_id': self.host_id,
+                'host_name': self.host_name,
+                'message': f"网络创建成功: {network.name}"
+            }
+        except docker.errors.APIError as e:
+            log_service_error("create_network", e, name=name, driver=driver)
+            raise DockerServiceError(f"创建网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("create_network", e, name=name, driver=driver)
+            if isinstance(e, DockerServiceError):
+                raise
+            raise ContainerOperationError(f"创建网络失败: {str(e)}")
+    
+    def delete_network(self, network_id: str, force: bool = False) -> Dict[str, Any]:
+        """删除网络"""
+        if not self.is_connected():
+            raise DockerServiceError(f"Docker 主机 {self.host_name} 不可用")
+        
+        try:
+            network = self.client.networks.get(network_id)
+            
+            if force:
+                containers = network.attrs.get('Containers', {})
+                for container_id in containers.keys():
+                    try:
+                        network.disconnect(container_id, force=True)
+                    except Exception:
+                        pass
+            
+            network.remove()
+            
+            return {
+                'success': True,
+                'network_id': network_id,
+                'host_id': self.host_id,
+                'host_name': self.host_name,
+                'message': f"网络删除成功: {network_id}"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"网络不存在: {network_id}")
+        except docker.errors.APIError as e:
+            log_service_error("delete_network", e, network_id=network_id)
+            raise DockerServiceError(f"删除网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("delete_network", e, network_id=network_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"删除网络失败: {str(e)}")
+    
+    def connect_container_to_network(
+        self,
+        network_id: str,
+        container_id: str,
+        ip_address: Optional[str] = None,
+        ipv6_address: Optional[str] = None,
+        network_aliases: Optional[List[str]] = None,
+        links: Optional[List[str]] = None,
+        driver_opt: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """将容器连接到网络"""
+        if not self.is_connected():
+            raise DockerServiceError(f"Docker 主机 {self.host_name} 不可用")
+        
+        try:
+            network = self.client.networks.get(network_id)
+            
+            connect_kwargs = {}
+            if ip_address:
+                connect_kwargs['ipv4_address'] = ip_address
+            if ipv6_address:
+                connect_kwargs['ipv6_address'] = ipv6_address
+            if network_aliases:
+                connect_kwargs['aliases'] = network_aliases
+            if links:
+                connect_kwargs['links'] = links
+            if driver_opt:
+                connect_kwargs['driver_opt'] = driver_opt
+            
+            network.connect(container_id, **connect_kwargs)
+            
+            return {
+                'success': True,
+                'network_id': network_id,
+                'container_id': container_id,
+                'host_id': self.host_id,
+                'host_name': self.host_name,
+                'message': f"容器已成功连接到网络"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"网络或容器不存在")
+        except docker.errors.APIError as e:
+            log_service_error("connect_container_to_network", e, network_id=network_id, container_id=container_id)
+            raise DockerServiceError(f"连接容器到网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("connect_container_to_network", e, network_id=network_id, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"连接容器到网络失败: {str(e)}")
+    
+    def disconnect_container_from_network(
+        self,
+        network_id: str,
+        container_id: str,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """将容器从网络断开"""
+        if not self.is_connected():
+            raise DockerServiceError(f"Docker 主机 {self.host_name} 不可用")
+        
+        try:
+            network = self.client.networks.get(network_id)
+            
+            network.disconnect(container_id, force=force)
+            
+            return {
+                'success': True,
+                'network_id': network_id,
+                'container_id': container_id,
+                'host_id': self.host_id,
+                'host_name': self.host_name,
+                'message': f"容器已成功从网络断开"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"网络或容器不存在")
+        except docker.errors.APIError as e:
+            log_service_error("disconnect_container_from_network", e, network_id=network_id, container_id=container_id)
+            raise DockerServiceError(f"断开容器与网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("disconnect_container_from_network", e, network_id=network_id, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"断开容器与网络失败: {str(e)}")
 
 
 class MultiDockerService:
@@ -1145,6 +1488,92 @@ class AsyncDockerHostClient:
     
     async def get_container_stats_async(self, container_id: str) -> Optional[Dict[str, Any]]:
         return await asyncio.to_thread(self._sync.get_container_stats, container_id)
+    
+    async def list_networks_async(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None,
+        driver: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._sync.list_networks,
+            page=page,
+            page_size=page_size,
+            search=search,
+            driver=driver
+        )
+    
+    async def get_network_info_async(self, network_id: str) -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(self._sync.get_network_info, network_id)
+    
+    async def create_network_async(
+        self,
+        name: str,
+        driver: str = 'bridge',
+        check_duplicate: bool = True,
+        internal: bool = False,
+        enable_ipv6: bool = False,
+        attachable: bool = False,
+        ingress: bool = False,
+        ipam: Optional[Dict[str, Any]] = None,
+        options: Optional[Dict[str, str]] = None,
+        labels: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.create_network,
+            name=name,
+            driver=driver,
+            check_duplicate=check_duplicate,
+            internal=internal,
+            enable_ipv6=enable_ipv6,
+            attachable=attachable,
+            ingress=ingress,
+            ipam=ipam,
+            options=options,
+            labels=labels
+        )
+    
+    async def delete_network_async(self, network_id: str, force: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.delete_network,
+            network_id=network_id,
+            force=force
+        )
+    
+    async def connect_container_to_network_async(
+        self,
+        network_id: str,
+        container_id: str,
+        ip_address: Optional[str] = None,
+        ipv6_address: Optional[str] = None,
+        network_aliases: Optional[List[str]] = None,
+        links: Optional[List[str]] = None,
+        driver_opt: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.connect_container_to_network,
+            network_id=network_id,
+            container_id=container_id,
+            ip_address=ip_address,
+            ipv6_address=ipv6_address,
+            network_aliases=network_aliases,
+            links=links,
+            driver_opt=driver_opt
+        )
+    
+    async def disconnect_container_from_network_async(
+        self,
+        network_id: str,
+        container_id: str,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.disconnect_container_from_network,
+            network_id=network_id,
+            container_id=container_id,
+            force=force
+        )
 
 
 class AsyncMultiDockerService:
@@ -1452,6 +1881,57 @@ class AsyncMultiDockerService:
             'deleted_count': len(deleted),
             'failed_count': len(failed)
         }
+    
+    async def get_all_networks_async(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None,
+        driver: Optional[str] = None,
+        host_ids: Optional[List[int]] = None
+    ) -> List[Dict[str, Any]]:
+        """获取所有主机的网络列表"""
+        clients = self.get_all_host_clients()
+        
+        if host_ids is not None:
+            clients = [c for c in clients if c.host_id in host_ids]
+        
+        if not clients:
+            return []
+        
+        tasks = [client.list_networks_async(page, page_size, search, driver) for client in clients]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        all_networks_list = []
+        for client, result in zip(clients, results):
+            if isinstance(result, Exception):
+                app_logger.error(f"[AsyncMultiDockerService] 获取主机 {client.host_name} 网络列表失败: {result}")
+            else:
+                all_networks_list.extend(result)
+        
+        return all_networks_list
+    
+    async def find_network_host_async(self, network_id: str) -> Optional[AsyncDockerHostClient]:
+        """查找网络所在的主机"""
+        clients = self.get_all_host_clients()
+        
+        async def check_client(client: AsyncDockerHostClient):
+            try:
+                info = await client.get_network_info_async(network_id)
+                return (client, info is not None)
+            except Exception:
+                return (client, False)
+        
+        tasks = [check_client(client) for client in clients]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for result in results:
+            if not isinstance(result, Exception):
+                client, found = result
+                if found:
+                    return client
+        
+        return None
 
 
 multi_docker_service = MultiDockerService()

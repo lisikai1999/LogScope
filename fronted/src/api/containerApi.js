@@ -448,6 +448,33 @@ const buildApi = {
 }
 
 
+const networkApi = {
+  async getNetworks(params = {}) {
+    return get('/api/networks', params)
+  },
+  
+  async getNetworkInfo(networkId) {
+    return get(`/api/networks/${encodeURIComponent(networkId)}`)
+  },
+  
+  async createNetwork(data) {
+    return post('/api/networks', data)
+  },
+  
+  async deleteNetwork(networkId, params = {}) {
+    return del(`/api/networks/${encodeURIComponent(networkId)}`, params)
+  },
+  
+  async connectContainer(networkId, data) {
+    return post(`/api/networks/${encodeURIComponent(networkId)}/connect`, data)
+  },
+  
+  async disconnectContainer(networkId, data) {
+    return post(`/api/networks/${encodeURIComponent(networkId)}/disconnect`, data)
+  }
+}
+
+
 export {
   globalLoading,
   getErrorMessage,
@@ -467,7 +494,8 @@ export {
   userManagementApi,
   hostApi,
   scanApi,
-  buildApi
+  buildApi,
+  networkApi
 }
 
 export default {
@@ -487,5 +515,6 @@ export default {
   userManagementApi,
   hostApi,
   scanApi,
-  buildApi
+  buildApi,
+  networkApi
 }
