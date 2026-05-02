@@ -521,8 +521,6 @@ class ImageBuild(Base):
     progress = Column(Integer, default=0)
     progress_message = Column(String(500), nullable=True)
     
-    log_id = Column(Integer, ForeignKey("image_build_logs.id", ondelete="SET NULL"), nullable=True)
-    
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
