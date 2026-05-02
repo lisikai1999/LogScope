@@ -1,49 +1,31 @@
 <template>
-  <div class="dashboard">
-    <header class="header">
-      <div class="container">
-        <div class="header-content">
-          <div class="logo">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-            </svg>
-            <div>
-              <h1>Docker 日志查看器</h1>
-              <p>资源监控 Dashboard</p>
-            </div>
-          </div>
-          <div class="header-actions">
-            <router-link to="/" class="btn btn-outline">
-              容器列表
-            </router-link>
-            <button class="btn btn-outline" @click="refreshData">
-              刷新
-            </button>
-            <label class="checkbox-label">
-              <input
-                type="checkbox"
-                v-model="showAll"
-                @change="fetchStats"
-              />
-              <span>显示全部容器</span>
-            </label>
-          </div>
-        </div>
-      </div>
-    </header>
+  <AppLayout 
+    :currentUser="currentUser"
+    :page-title="'仪表盘'"
+    @refresh="refreshData"
+    @logout="logout"
+  >
+    <div class="dashboard-controls">
+      <label class="checkbox-label">
+        <input
+          type="checkbox"
+          v-model="showAll"
+          @change="fetchStats"
+        />
+        <span>显示全部容器</span>
+      </label>
+    </div>
 
-    <main class="main-content">
-      <div class="container">
-        <div v-if="error" class="error-message">
-          {{ error }}
-        </div>
+    <div v-if="error" class="error-message">
+      {{ error }}
+    </div>
 
-        <div v-if="loading && stats.length === 0" class="loading-state">
-          <div class="loading-spinner"></div>
-          <p>加载中...</p>
-        </div>
+    <div v-if="loading && stats.length === 0" class="loading-state">
+      <div class="loading-spinner"></div>
+      <p>加载中...</p>
+    </div>
 
-        <template v-else>
+    <template v-else>
           <div class="stats-summary">
             <div class="stat-card">
               <div class="stat-icon" style="background-color: var(--primary-color);">
@@ -225,14 +207,16 @@
             </div>
           </div>
         </template>
-      </div>
-    </main>
-  </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import { useAuth } from '../composables/useAuth'
+import AppLayout from '../components/AppLayout.vue'
+
+const { currentUser, logout } = useAuth()
 
 const stats = ref([])
 const runtimeStats = ref({
