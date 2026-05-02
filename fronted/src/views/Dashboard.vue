@@ -1,39 +1,20 @@
 <template>
-  <div class="dashboard">
-    <header class="header">
-      <div class="container">
-        <div class="header-content">
-          <div class="logo">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-            </svg>
-            <div>
-              <h1>Docker 日志查看器</h1>
-              <p>资源监控 Dashboard</p>
-            </div>
-          </div>
-          <div class="header-actions">
-            <router-link to="/" class="btn btn-outline">
-              容器列表
-            </router-link>
-            <button class="btn btn-outline" @click="refreshData">
-              刷新
-            </button>
-            <label class="checkbox-label">
-              <input
-                type="checkbox"
-                v-model="showAll"
-                @change="fetchStats"
-              />
-              <span>显示全部容器</span>
-            </label>
-          </div>
-        </div>
+  <AppLayout 
+    :currentUser="currentUser"
+    @refresh="refreshData"
+    @logout="logout"
+  >
+    <div class="content-wrapper">
+      <div class="controls-bar">
+        <label class="checkbox-label">
+          <input
+            type="checkbox"
+            v-model="showAll"
+            @change="fetchStats"
+          />
+          <span>显示全部容器</span>
+        </label>
       </div>
-    </header>
-
-    <main class="main-content">
-      <div class="container">
         <div v-if="error" class="error-message">
           {{ error }}
         </div>
@@ -225,14 +206,17 @@
             </div>
           </div>
         </template>
-      </div>
-    </main>
-  </div>
+    </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
+import { useAuth } from '../composables/useAuth'
+import AppLayout from '../components/AppLayout.vue'
+
+const { currentUser, logout } = useAuth()
 
 const stats = ref([])
 const runtimeStats = ref({
@@ -327,55 +311,16 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.dashboard {
-  min-height: 100vh;
-  background-color: var(--bg-secondary);
-}
-
-.header {
-  background-color: var(--bg-primary);
-  border-bottom: 1px solid var(--border-color);
-  padding: 1rem 0;
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.logo h1 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin: 0;
-}
-
-.logo p {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-  margin: 0;
-}
-
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.main-content {
-  padding: 1.5rem 0;
-}
-
-.container {
+.content-wrapper {
+  width: 100%;
   max-width: 1400px;
   margin: 0 auto;
-  padding: 0 1rem;
+}
+
+.controls-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 1rem;
 }
 
 .error-message {
