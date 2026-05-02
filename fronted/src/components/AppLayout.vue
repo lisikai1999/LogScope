@@ -89,6 +89,22 @@
           </li>
 
           <li v-if="isAdmin" class="nav-item">
+            <router-link to="/networks" class="nav-link" :class="{ 'nav-link-active': $route.path === '/networks' }">
+              <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="5" r="3"></circle>
+                <circle cx="6" cy="12" r="3"></circle>
+                <circle cx="18" cy="12" r="3"></circle>
+                <circle cx="12" cy="19" r="3"></circle>
+                <line x1="9.5" y1="7" x2="8.5" y2="9.5"></line>
+                <line x1="14.5" y1="7" x2="15.5" y2="9.5"></line>
+                <line x1="8.5" y1="14.5" x2="9.5" y2="17"></line>
+                <line x1="15.5" y1="14.5" x2="14.5" y2="17"></line>
+              </svg>
+              <span v-if="!isCollapsed" class="nav-text">网络管理</span>
+            </router-link>
+          </li>
+
+          <li v-if="isAdmin" class="nav-item">
             <router-link to="/hosts" class="nav-link" :class="{ 'nav-link-active': $route.path === '/hosts' }">
               <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
