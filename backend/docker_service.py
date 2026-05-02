@@ -1357,6 +1357,778 @@ class DockerService:
                 raise
             raise ContainerOperationError(f"获取容器完整信息失败: {str(e)}")
     
+    def list_images(
+        self,
+        all: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """获取本地镜像列表
+        
+        参数：
+        - all: 是否显示中间层镜像
+        - page: 页码
+        - page_size: 每页数量
+        - search: 搜索关键词
+        
+        返回：
+        - total: 镜像总数
+        - page: 当前页码
+        - page_size: 每页数量
+        - total_pages: 总页数
+        - data: 当前页的镜像列表
+        """
+        if not self.docker_available:
+            return self._get_mock_images(all, page, page_size, search)
+        
+        try:
+            images = self.client.images.list(all=all)
+            result = []
+            
+            for image in images:
+                try:
+                    attrs = image.attrs
+                    config = attrs.get('Config', {})
+                    
+                    result.append({
+                        'id': image.id,
+                        'short_id': image.short_id,
+                        'tags': image.tags or [],
+                        'size': attrs.get('Size', 0),
+                        'virtual_size': attrs.get('VirtualSize', attrs.get('Size', 0)),
+                        'created': self._parse_timestamp_to_int(attrs.get('Created', '')),
+                        'created_at': attrs.get('Created', ''),
+                        'repo_tags': image.tags or [],
+                        'repo_digests': attrs.get('RepoDigests', []),
+                        'parent': attrs.get('Parent', ''),
+                        'labels': config.get('Labels', {}) if config else {},
+                        'architecture': attrs.get('Architecture', ''),
+                        'os': attrs.get('Os', ''),
+                        'docker_version': attrs.get('DockerVersion', '')
+                    })
+                except Exception as e:
+                    log_service_error("list_images", e, image_id=image.short_id)
+            
+            return self._paginate_images(result, page, page_size, search)
+        except Exception as e:
+            log_service_error("list_images", e, all=all, page=page, page_size=page_size, search=search)
+            return {
+                'total': 0,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': 0,
+                'data': []
+            }
+    
+    def _parse_timestamp_to_int(self, timestamp_str: str) -> int:
+        """将 ISO 时间戳解析为 Unix 时间戳（秒）"""
+        if not timestamp_str:
+            return 0
+        try:
+            from dateutil import parser
+            dt = parser.isoparse(timestamp_str)
+            return int(dt.timestamp())
+        except Exception:
+            return 0
+    
+    def _paginate_images(
+        self,
+        images: List[Dict[str, Any]],
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """对镜像列表进行分页和搜索处理"""
+        filtered_images = images
+        
+        if search:
+            search_lower = search.lower()
+            filtered_images = [
+                img for img in images
+                if (search_lower in ' '.join(img.get('tags', [])).lower() or
+                    search_lower in img.get('short_id', '').lower() or
+                    search_lower in ' '.join(img.get('repo_digests', [])).lower())
+            ]
+        
+        total = len(filtered_images)
+        total_pages = (total + page_size - 1) // page_size
+        
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        data = filtered_images[start_index:end_index]
+        
+        return {
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
+            'data': data
+        }
+    
+    def _get_mock_images(
+        self,
+        all: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """返回模拟的镜像数据"""
+        import time
+        
+        mock_images = [
+            {
+                'id': 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+                'short_id': 'abcdef123456',
+                'tags': ['nginx:latest', 'nginx:1.25'],
+                'size': 187000000,
+                'virtual_size': 187000000,
+                'created': int(time.time()) - 86400 * 10,
+                'created_at': '2024-01-10T00:00:00Z',
+                'repo_tags': ['nginx:latest', 'nginx:1.25'],
+                'repo_digests': ['nginx@sha256:abcdef1234567890...'],
+                'parent': '',
+                'labels': {'maintainer': 'NGINX Docker Maintainers'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            },
+            {
+                'id': 'sha256:abcdef0987654321abcdef0987654321abcdef0987654321abcdef0987654321',
+                'short_id': 'abcdef098765',
+                'tags': ['postgres:15', 'postgres:latest'],
+                'size': 412000000,
+                'virtual_size': 412000000,
+                'created': int(time.time()) - 86400 * 15,
+                'created_at': '2024-01-05T00:00:00Z',
+                'repo_tags': ['postgres:15', 'postgres:latest'],
+                'repo_digests': ['postgres@sha256:abcdef0987654321...'],
+                'parent': '',
+                'labels': {'maintainer': 'PostgreSQL Docker Maintainers'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            },
+            {
+                'id': 'sha256:abcdef1122334455abcdef1122334455abcdef1122334455abcdef1122334455',
+                'short_id': 'abcdef112233',
+                'tags': ['redis:alpine', 'redis:7'],
+                'size': 32000000,
+                'virtual_size': 32000000,
+                'created': int(time.time()) - 86400 * 5,
+                'created_at': '2024-01-15T00:00:00Z',
+                'repo_tags': ['redis:alpine', 'redis:7'],
+                'repo_digests': ['redis@sha256:abcdef1122334455...'],
+                'parent': '',
+                'labels': {'maintainer': 'Redis Docker Maintainers'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            },
+            {
+                'id': 'sha256:abcdef5566778899abcdef5566778899abcdef5566778899abcdef5566778899',
+                'short_id': 'abcdef556677',
+                'tags': ['node:18-alpine'],
+                'size': 178000000,
+                'virtual_size': 178000000,
+                'created': int(time.time()) - 86400 * 20,
+                'created_at': '2023-12-20T00:00:00Z',
+                'repo_tags': ['node:18-alpine'],
+                'repo_digests': ['node@sha256:abcdef5566778899...'],
+                'parent': '',
+                'labels': {'maintainer': 'Node.js Docker Team'},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            }
+        ]
+        
+        if all:
+            mock_images.append({
+                'id': 'sha256:abcdef9900112233abcdef9900112233abcdef9900112233abcdef9900112233',
+                'short_id': 'abcdef990011',
+                'tags': [],
+                'size': 25000000,
+                'virtual_size': 25000000,
+                'created': int(time.time()) - 86400 * 30,
+                'created_at': '2023-12-10T00:00:00Z',
+                'repo_tags': [],
+                'repo_digests': [],
+                'parent': 'sha256:abcdef5566778899...',
+                'labels': {},
+                'architecture': 'amd64',
+                'os': 'linux',
+                'docker_version': '24.0.7'
+            })
+        
+        return self._paginate_images(mock_images, page, page_size, search)
+    
+    def get_image_info(self, image_name_or_id: str) -> Dict[str, Any]:
+        """获取镜像详情信息"""
+        if not self.docker_available:
+            return self._get_mock_image_info(image_name_or_id)
+        
+        try:
+            image = self.client.images.get(image_name_or_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image_name_or_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_image_info", e, image_name=image_name_or_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            attrs = image.attrs
+            config = attrs.get('Config', {})
+            rootfs = attrs.get('RootFS', {})
+            
+            layers_info = rootfs.get('Layers', [])
+            layers = [{'id': layer, 'size': 0} for layer in layers_info]
+            
+            history = image.history()
+            
+            return {
+                'id': image.id,
+                'short_id': image.short_id,
+                'tags': image.tags or [],
+                'size': attrs.get('Size', 0),
+                'virtual_size': attrs.get('VirtualSize', attrs.get('Size', 0)),
+                'created': self._parse_timestamp_to_int(attrs.get('Created', '')),
+                'created_at': attrs.get('Created', ''),
+                'repo_tags': image.tags or [],
+                'repo_digests': attrs.get('RepoDigests', []),
+                'parent': attrs.get('Parent', ''),
+                'labels': config.get('Labels', {}) if config else {},
+                'architecture': attrs.get('Architecture', ''),
+                'os': attrs.get('Os', ''),
+                'docker_version': attrs.get('DockerVersion', ''),
+                'layers': layers,
+                'config': {
+                    'env': config.get('Env', []) if config else [],
+                    'cmd': config.get('Cmd', []) if config else [],
+                    'entrypoint': config.get('Entrypoint', []) if config else [],
+                    'working_dir': config.get('WorkingDir', '') if config else '',
+                    'user': config.get('User', '') if config else '',
+                    'exposed_ports': list(config.get('ExposedPorts', {}).keys()) if config and config.get('ExposedPorts') else [],
+                    'volumes': list(config.get('Volumes', {}).keys()) if config and config.get('Volumes') else []
+                },
+                'history': [
+                    {
+                        'id': h.get('Id', ''),
+                        'created': h.get('Created', 0),
+                        'created_by': h.get('CreatedBy', ''),
+                        'size': h.get('Size', 0),
+                        'comment': h.get('Comment', ''),
+                        'tags': h.get('Tags', [])
+                    }
+                    for h in history
+                ]
+            }
+        except Exception as e:
+            log_service_error("get_image_info", e, image_name=image_name_or_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取镜像详情失败: {str(e)}")
+    
+    def _get_mock_image_info(self, image_name: str) -> Dict[str, Any]:
+        """返回模拟的镜像详情"""
+        import time
+        
+        layers = [
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000001', 'size': 77800000},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000002', 'size': 15600000},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000003', 'size': 2500000},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000004', 'size': 0},
+            {'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000005', 'size': 0}
+        ]
+        
+        history = [
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000005',
+                'created': int(time.time()) - 86400 * 25,
+                'created_by': '/bin/sh -c #(nop) CMD [\"nginx\" \"-g\" \"daemon off;\"]',
+                'size': 0,
+                'comment': '',
+                'tags': ['nginx:latest', 'nginx:1.25']
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000004',
+                'created': int(time.time()) - 86400 * 26,
+                'created_by': '/bin/sh -c #(nop) EXPOSE 80',
+                'size': 0,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000003',
+                'created': int(time.time()) - 86400 * 27,
+                'created_by': '/bin/sh -c #(nop) COPY file:xyz...',
+                'size': 2500000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000002',
+                'created': int(time.time()) - 86400 * 28,
+                'created_by': '/bin/sh -c apt-get update && apt-get install -y nginx',
+                'size': 15600000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000001',
+                'created': int(time.time()) - 86400 * 30,
+                'created_by': '/bin/sh -c #(nop) ADD file:abcdef...',
+                'size': 77800000,
+                'comment': '',
+                'tags': []
+            }
+        ]
+        
+        return {
+            'id': 'sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+            'short_id': 'abcdef123456',
+            'tags': ['nginx:latest', 'nginx:1.25'],
+            'size': 187000000,
+            'virtual_size': 187000000,
+            'created': int(time.time()) - 86400 * 10,
+            'created_at': '2024-01-10T00:00:00Z',
+            'repo_tags': ['nginx:latest', 'nginx:1.25'],
+            'repo_digests': ['nginx@sha256:abcdef1234567890...'],
+            'parent': '',
+            'labels': {'maintainer': 'NGINX Docker Maintainers <docker-maint@nginx.com>'},
+            'architecture': 'amd64',
+            'os': 'linux',
+            'docker_version': '24.0.7',
+            'layers': layers,
+            'config': {
+                'env': ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin', 'NGINX_VERSION=1.25.3'],
+                'cmd': ['nginx', '-g', 'daemon off;'],
+                'entrypoint': [],
+                'working_dir': '',
+                'user': '',
+                'exposed_ports': ['80/tcp'],
+                'volumes': []
+            },
+            'history': history
+        }
+    
+    def get_image_history(self, image_name_or_id: str) -> List[Dict[str, Any]]:
+        """获取镜像历史"""
+        if not self.docker_available:
+            return self._get_mock_image_history(image_name_or_id)
+        
+        try:
+            image = self.client.images.get(image_name_or_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image_name_or_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_image_history", e, image_name=image_name_or_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            history = image.history()
+            result = []
+            
+            for h in history:
+                result.append({
+                    'id': h.get('Id', ''),
+                    'created': h.get('Created', 0),
+                    'created_by': h.get('CreatedBy', ''),
+                    'size': h.get('Size', 0),
+                    'comment': h.get('Comment', ''),
+                    'tags': h.get('Tags', [])
+                })
+            
+            return result
+        except Exception as e:
+            log_service_error("get_image_history", e, image_name=image_name_or_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取镜像历史失败: {str(e)}")
+    
+    def _get_mock_image_history(self, image_name: str) -> List[Dict[str, Any]]:
+        """返回模拟的镜像历史"""
+        import time
+        
+        return [
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000005',
+                'created': int(time.time()) - 86400 * 25,
+                'created_by': '/bin/sh -c #(nop) CMD [\"nginx\" \"-g\" \"daemon off;\"]',
+                'size': 0,
+                'comment': '',
+                'tags': ['nginx:latest', 'nginx:1.25']
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000004',
+                'created': int(time.time()) - 86400 * 26,
+                'created_by': '/bin/sh -c #(nop) EXPOSE 80',
+                'size': 0,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000003',
+                'created': int(time.time()) - 86400 * 27,
+                'created_by': '/bin/sh -c #(nop) COPY file:xyz...',
+                'size': 2500000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000002',
+                'created': int(time.time()) - 86400 * 28,
+                'created_by': '/bin/sh -c apt-get update && apt-get install -y nginx',
+                'size': 15600000,
+                'comment': '',
+                'tags': []
+            },
+            {
+                'id': 'sha256:abcdef000000000000000000000000000000000000000000000000000001',
+                'created': int(time.time()) - 86400 * 30,
+                'created_by': '/bin/sh -c #(nop) ADD file:abcdef...',
+                'size': 77800000,
+                'comment': '',
+                'tags': []
+            }
+        ]
+    
+    def pull_image(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        platform: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """拉取镜像
+        
+        参数：
+        - image: 镜像名称
+        - tag: 标签
+        - platform: 目标平台，如 linux/amd64, linux/arm64
+        - auth_config: 认证配置，包含 username 和 password
+        
+        返回：
+        - success: 是否成功
+        - image_id: 镜像 ID
+        - tags: 镜像标签
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_pull_result(image, tag)
+        
+        try:
+            pull_kwargs = {}
+            if tag:
+                pull_kwargs['tag'] = tag
+            if platform:
+                pull_kwargs['platform'] = platform
+            if auth_config:
+                pull_kwargs['auth_config'] = auth_config
+            
+            app_logger.info(f"[Pull Image] 开始拉取镜像: {image}:{tag or 'latest'}")
+            
+            pulled_image = self.client.images.pull(image, **pull_kwargs)
+            
+            app_logger.info(f"[Pull Image] 镜像拉取成功: {pulled_image.short_id}")
+            
+            return {
+                'success': True,
+                'image_id': pulled_image.id,
+                'short_id': pulled_image.short_id,
+                'tags': pulled_image.tags or [],
+                'message': f"镜像拉取成功: {pulled_image.short_id}"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}:{tag or 'latest'}")
+        except docker.errors.APIError as e:
+            log_service_error("pull_image", e, image=image, tag=tag)
+            raise DockerServiceError(f"拉取镜像失败: {str(e)}")
+        except Exception as e:
+            log_service_error("pull_image", e, image=image, tag=tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"拉取镜像失败: {str(e)}")
+    
+    def _get_mock_pull_result(self, image: str, tag: Optional[str] = None) -> Dict[str, Any]:
+        """返回模拟的拉取结果"""
+        import time
+        import random
+        
+        image_id = f"sha256:{''.join(random.choices('0123456789abcdef', k=64))}"
+        short_id = image_id[7:19]
+        full_tag = f"{tag or 'latest'}"
+        
+        return {
+            'success': True,
+            'image_id': image_id,
+            'short_id': short_id,
+            'tags': [f"{image}:{full_tag}"],
+            'message': f"镜像拉取成功: {short_id}"
+        }
+    
+    def push_image(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        target_image: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """推送镜像
+        
+        参数：
+        - image: 本地镜像名称或 ID
+        - tag: 目标标签
+        - target_image: 目标镜像名称，可选
+        - auth_config: 认证配置
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_push_result(image, tag, target_image)
+        
+        try:
+            push_kwargs = {}
+            if auth_config:
+                push_kwargs['auth_config'] = auth_config
+            
+            push_image = image
+            if target_image:
+                push_image = target_image
+            if tag:
+                push_image = f"{push_image}:{tag}"
+            
+            app_logger.info(f"[Push Image] 开始推送镜像: {push_image}")
+            
+            result = self.client.images.push(push_image, **push_kwargs)
+            
+            app_logger.info(f"[Push Image] 镜像推送成功: {push_image}")
+            
+            return {
+                'success': True,
+                'message': f"镜像推送成功: {push_image}"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}")
+        except docker.errors.APIError as e:
+            log_service_error("push_image", e, image=image, tag=tag)
+            raise DockerServiceError(f"推送镜像失败: {str(e)}")
+        except Exception as e:
+            log_service_error("push_image", e, image=image, tag=tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"推送镜像失败: {str(e)}")
+    
+    def _get_mock_push_result(self, image: str, tag: Optional[str] = None, target_image: Optional[str] = None) -> Dict[str, Any]:
+        """返回模拟的推送结果"""
+        push_image = target_image or image
+        if tag:
+            push_image = f"{push_image}:{tag}"
+        
+        return {
+            'success': True,
+            'message': f"镜像推送成功: {push_image}"
+        }
+    
+    def delete_image(
+        self,
+        image: str,
+        force: bool = False,
+        noprune: bool = False
+    ) -> Dict[str, Any]:
+        """删除镜像
+        
+        参数：
+        - image: 镜像名称或 ID
+        - force: 是否强制删除
+        - noprune: 是否不删除未使用的父镜像
+        
+        返回：
+        - success: 是否成功
+        - deleted: 删除的镜像列表
+        - untagged: 取消标签的镜像列表
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_delete_result(image, force, noprune)
+        
+        try:
+            app_logger.info(f"[Delete Image] 开始删除镜像: {image}, force={force}, noprune={noprune}")
+            
+            result = self.client.images.remove(image, force=force, noprune=noprune)
+            
+            deleted = []
+            untagged = []
+            
+            if result:
+                for item in result:
+                    if 'Deleted' in item:
+                        deleted.append(item['Deleted'])
+                    if 'Untagged' in item:
+                        untagged.append(item['Untagged'])
+            
+            app_logger.info(f"[Delete Image] 镜像删除成功: deleted={len(deleted)}, untagged={len(untagged)}")
+            
+            return {
+                'success': True,
+                'deleted': deleted,
+                'untagged': untagged,
+                'message': f"镜像删除成功：删除 {len(deleted)} 个，取消标签 {len(untagged)} 个"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}")
+        except docker.errors.APIError as e:
+            log_service_error("delete_image", e, image=image, force=force)
+            raise DockerServiceError(f"删除镜像失败: {str(e)}")
+        except Exception as e:
+            log_service_error("delete_image", e, image=image, force=force)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"删除镜像失败: {str(e)}")
+    
+    def _get_mock_delete_result(self, image: str, force: bool = False, noprune: bool = False) -> Dict[str, Any]:
+        """返回模拟的删除结果"""
+        import random
+        
+        deleted = []
+        untagged = []
+        
+        if random.random() > 0.3:
+            deleted.append(f"sha256:{''.join(random.choices('0123456789abcdef', k=64))}")
+        else:
+            untagged.append(f"{image}:latest")
+        
+        return {
+            'success': True,
+            'deleted': deleted,
+            'untagged': untagged,
+            'message': f"镜像删除成功：删除 {len(deleted)} 个，取消标签 {len(untagged)} 个"
+        }
+    
+    def add_image_tag(
+        self,
+        image: str,
+        new_tag: str,
+        repository: Optional[str] = None,
+        tag: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """为镜像添加标签
+        
+        参数：
+        - image: 源镜像名称或 ID
+        - new_tag: 新标签（完整格式：repository:tag）
+        - repository: 仓库名称（可选，与 tag 配合使用）
+        - tag: 标签名（可选，与 repository 配合使用）
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_tag_result(image, new_tag)
+        
+        try:
+            target_repository = new_tag
+            target_tag = None
+            
+            if repository and tag:
+                target_repository = repository
+                target_tag = tag
+            elif ':' in new_tag:
+                parts = new_tag.rsplit(':', 1)
+                if len(parts) == 2 and '/' not in parts[1]:
+                    target_repository = parts[0]
+                    target_tag = parts[1]
+            
+            app_logger.info(f"[Tag Image] 为镜像 {image} 添加标签: {new_tag}")
+            
+            result = self.client.images.get(image).tag(target_repository, target_tag)
+            
+            if result:
+                app_logger.info(f"[Tag Image] 标签添加成功: {new_tag}")
+                return {
+                    'success': True,
+                    'message': f"标签添加成功: {new_tag}"
+                }
+            else:
+                raise ContainerOperationError(f"标签添加失败: {new_tag}")
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像不存在: {image}")
+        except docker.errors.APIError as e:
+            log_service_error("add_image_tag", e, image=image, new_tag=new_tag)
+            raise DockerServiceError(f"添加标签失败: {str(e)}")
+        except Exception as e:
+            log_service_error("add_image_tag", e, image=image, new_tag=new_tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"添加标签失败: {str(e)}")
+    
+    def _get_mock_tag_result(self, image: str, new_tag: str) -> Dict[str, Any]:
+        """返回模拟的标签操作结果"""
+        return {
+            'success': True,
+            'message': f"标签添加成功: {new_tag}"
+        }
+    
+    def remove_image_tag(
+        self,
+        image: str,
+        tag: str
+    ) -> Dict[str, Any]:
+        """删除镜像标签
+        
+        参数：
+        - image: 镜像名称或 ID
+        - tag: 要删除的标签（格式：repository:tag）
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_untag_result(image, tag)
+        
+        try:
+            app_logger.info(f"[Untag Image] 删除镜像标签: {tag}")
+            
+            result = self.client.images.remove(tag, noprune=True)
+            
+            untagged = []
+            if result:
+                for item in result:
+                    if 'Untagged' in item:
+                        untagged.append(item['Untagged'])
+            
+            if untagged:
+                app_logger.info(f"[Untag Image] 标签删除成功: {tag}")
+                return {
+                    'success': True,
+                    'untagged': untagged,
+                    'message': f"标签删除成功: {tag}"
+                }
+            else:
+                raise ContainerOperationError(f"标签删除失败或标签不存在: {tag}")
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"镜像或标签不存在: {tag}")
+        except docker.errors.APIError as e:
+            log_service_error("remove_image_tag", e, image=image, tag=tag)
+            raise DockerServiceError(f"删除标签失败: {str(e)}")
+        except Exception as e:
+            log_service_error("remove_image_tag", e, image=image, tag=tag)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"删除标签失败: {str(e)}")
+    
+    def _get_mock_untag_result(self, image: str, tag: str) -> Dict[str, Any]:
+        """返回模拟的取消标签结果"""
+        return {
+            'success': True,
+            'untagged': [tag],
+            'message': f"标签删除成功: {tag}"
+        }
+    
     def get_image_layers(self, image_name_or_id: str) -> Dict[str, Any]:
         """获取镜像层信息"""
         if not self.docker_available:
@@ -1897,7 +2669,979 @@ class DockerService:
                 'avg_runtime_human': '10 小时 20 分钟'
             }
         }
+    
+    def list_networks(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None,
+        driver: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """获取网络列表
+        
+        参数：
+        - page: 页码
+        - page_size: 每页数量
+        - search: 搜索关键词（网络名称、ID）
+        - driver: 驱动类型过滤
+        
+        返回：
+        - total: 网络总数
+        - page: 当前页码
+        - page_size: 每页数量
+        - total_pages: 总页数
+        - data: 当前页的网络列表
+        """
+        if not self.docker_available:
+            return self._get_mock_networks(page, page_size, search, driver)
+        
+        try:
+            filters = {}
+            if driver:
+                filters['driver'] = [driver]
+            
+            networks = self.client.networks.list(filters=filters)
+            result = []
+            
+            for network in networks:
+                try:
+                    attrs = network.attrs
+                    ipam_config = attrs.get('IPAM', {}).get('Config', [])
+                    first_ipam = ipam_config[0] if ipam_config else {}
+                    
+                    containers = attrs.get('Containers', {})
+                    container_count = len(containers) if containers else 0
+                    
+                    default_networks = ['bridge', 'host', 'none']
+                    is_default = network.name in default_networks
+                    
+                    result.append({
+                        'id': network.id,
+                        'name': network.name,
+                        'driver': network.attrs.get('Driver', ''),
+                        'scope': network.attrs.get('Scope', ''),
+                        'created': attrs.get('Created', ''),
+                        'internal': attrs.get('Internal', False),
+                        'enable_ipv6': attrs.get('EnableIPv6', False),
+                        'labels': attrs.get('Labels', {}),
+                        'subnet': first_ipam.get('Subnet', ''),
+                        'gateway': first_ipam.get('Gateway', ''),
+                        'container_count': container_count,
+                        'is_default': is_default
+                    })
+                except Exception as e:
+                    log_service_error("list_networks", e, network_id=network.short_id)
+            
+            return self._paginate_networks(result, page, page_size, search)
+        except Exception as e:
+            log_service_error("list_networks", e, page=page, page_size=page_size, search=search)
+            return {
+                'total': 0,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': 0,
+                'data': []
+            }
+    
+    def _paginate_networks(
+        self,
+        networks: List[Dict[str, Any]],
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """对网络列表进行分页和搜索处理"""
+        filtered_networks = networks
+        
+        if search:
+            search_lower = search.lower()
+            filtered_networks = [
+                n for n in networks
+                if (search_lower in n.get('name', '').lower() or
+                    search_lower in n.get('id', '').lower())
+            ]
+        
+        total = len(filtered_networks)
+        total_pages = (total + page_size - 1) // page_size
+        
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        data = filtered_networks[start_index:end_index]
+        
+        return {
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
+            'data': data
+        }
+    
+    def _get_mock_networks(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None,
+        driver: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """返回模拟的网络数据"""
+        import time
+        
+        base_time = int(time.time())
+        
+        mock_networks = [
+            {
+                'id': 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+                'name': 'bridge',
+                'driver': 'bridge',
+                'scope': 'local',
+                'created': '2024-01-01T00:00:00Z',
+                'internal': False,
+                'enable_ipv6': False,
+                'labels': {},
+                'subnet': '172.17.0.0/16',
+                'gateway': '172.17.0.1',
+                'container_count': 3,
+                'is_default': True
+            },
+            {
+                'id': 'abcdef0987654321abcdef0987654321abcdef0987654321abcdef0987654321',
+                'name': 'host',
+                'driver': 'host',
+                'scope': 'local',
+                'created': '2024-01-01T00:00:00Z',
+                'internal': False,
+                'enable_ipv6': False,
+                'labels': {},
+                'subnet': '',
+                'gateway': '',
+                'container_count': 0,
+                'is_default': True
+            },
+            {
+                'id': 'abcdef1122334455abcdef1122334455abcdef1122334455abcdef1122334455',
+                'name': 'none',
+                'driver': 'none',
+                'scope': 'local',
+                'created': '2024-01-01T00:00:00Z',
+                'internal': False,
+                'enable_ipv6': False,
+                'labels': {},
+                'subnet': '',
+                'gateway': '',
+                'container_count': 0,
+                'is_default': True
+            },
+            {
+                'id': 'abcdef5566778899abcdef5566778899abcdef5566778899abcdef5566778899',
+                'name': 'my-custom-network',
+                'driver': 'bridge',
+                'scope': 'local',
+                'created': '2024-01-10T10:00:00Z',
+                'internal': False,
+                'enable_ipv6': False,
+                'labels': {'project': 'my-app'},
+                'subnet': '172.20.0.0/16',
+                'gateway': '172.20.0.1',
+                'container_count': 2,
+                'is_default': False
+            },
+            {
+                'id': 'abcdef9900112233abcdef9900112233abcdef9900112233abcdef9900112233',
+                'name': 'overlay-network',
+                'driver': 'overlay',
+                'scope': 'swarm',
+                'created': '2024-01-15T08:00:00Z',
+                'internal': False,
+                'enable_ipv6': False,
+                'labels': {'environment': 'production'},
+                'subnet': '10.0.1.0/24',
+                'gateway': '10.0.1.1',
+                'container_count': 5,
+                'is_default': False
+            }
+        ]
+        
+        if driver:
+            mock_networks = [n for n in mock_networks if n['driver'] == driver]
+        
+        return self._paginate_networks(mock_networks, page, page_size, search)
+    
+    def get_network_info(self, network_id: str) -> Dict[str, Any]:
+        """获取网络详情信息
+        
+        参数：
+        - network_id: 网络 ID 或名称
+        
+        返回：
+        - 网络详情，包括 IPAM 配置、连接的容器等
+        """
+        if not self.docker_available:
+            return self._get_mock_network_info(network_id)
+        
+        try:
+            network = self.client.networks.get(network_id)
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"网络不存在: {network_id}")
+        except docker.errors.APIError as e:
+            log_service_error("get_network_info", e, network_id=network_id)
+            raise DockerServiceError(f"Docker API 错误: {str(e)}")
+        
+        try:
+            attrs = network.attrs
+            ipam = attrs.get('IPAM', {})
+            ipam_config = ipam.get('Config', [])
+            
+            containers_data = []
+            containers = attrs.get('Containers', {})
+            if containers:
+                for container_id, container_info in containers.items():
+                    containers_data.append({
+                        'container_id': container_id,
+                        'container_name': container_info.get('Name', '').lstrip('/'),
+                        'ip_address': container_info.get('IPv4Address', '').split('/')[0] if container_info.get('IPv4Address') else '',
+                        'mac_address': container_info.get('MacAddress', ''),
+                        'ipv6_address': container_info.get('IPv6Address', '').split('/')[0] if container_info.get('IPv6Address') else '',
+                        'network_aliases': container_info.get('Aliases', [])
+                    })
+            
+            first_ipam = ipam_config[0] if ipam_config else {}
+            default_networks = ['bridge', 'host', 'none']
+            is_default = network.name in default_networks
+            
+            return {
+                'id': network.id,
+                'name': network.name,
+                'driver': attrs.get('Driver', ''),
+                'scope': attrs.get('Scope', ''),
+                'created': attrs.get('Created', ''),
+                'internal': attrs.get('Internal', False),
+                'enable_ipv6': attrs.get('EnableIPv6', False),
+                'labels': attrs.get('Labels', {}),
+                'subnet': first_ipam.get('Subnet', ''),
+                'gateway': first_ipam.get('Gateway', ''),
+                'container_count': len(containers_data),
+                'is_default': is_default,
+                'ipam': {
+                    'driver': ipam.get('Driver', 'default'),
+                    'config': [
+                        {
+                            'subnet': c.get('Subnet', ''),
+                            'iprange': c.get('IPRange', ''),
+                            'gateway': c.get('Gateway', ''),
+                            'aux_addresses': c.get('AuxiliaryAddresses', {})
+                        }
+                        for c in ipam_config
+                    ],
+                    'options': ipam.get('Options', {})
+                },
+                'containers': containers_data,
+                'options': attrs.get('Options', {}),
+                'attachable': attrs.get('Attachable', False),
+                'ingress': attrs.get('Ingress', False),
+                'config_from': attrs.get('ConfigFrom', {}),
+                'config_only': attrs.get('ConfigOnly', False)
+            }
+        except Exception as e:
+            log_service_error("get_network_info", e, network_id=network_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"获取网络详情失败: {str(e)}")
+    
+    def _get_mock_network_info(self, network_id: str) -> Dict[str, Any]:
+        """返回模拟的网络详情"""
+        import time
+        
+        return {
+            'id': network_id,
+            'name': 'my-custom-network',
+            'driver': 'bridge',
+            'scope': 'local',
+            'created': '2024-01-10T10:00:00Z',
+            'internal': False,
+            'enable_ipv6': False,
+            'labels': {'project': 'my-app'},
+            'subnet': '172.20.0.0/16',
+            'gateway': '172.20.0.1',
+            'container_count': 2,
+            'is_default': False,
+            'ipam': {
+                'driver': 'default',
+                'config': [
+                    {
+                        'subnet': '172.20.0.0/16',
+                        'iprange': '172.20.10.0/24',
+                        'gateway': '172.20.0.1',
+                        'aux_addresses': {'router': '172.20.0.1'}
+                    }
+                ],
+                'options': {}
+            },
+            'containers': [
+                {
+                    'container_id': 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890',
+                    'container_name': 'web-app',
+                    'ip_address': '172.20.0.2',
+                    'mac_address': '02:42:ac:14:00:02',
+                    'ipv6_address': '',
+                    'network_aliases': ['web-app', 'nginx']
+                },
+                {
+                    'container_id': 'f1e2d3c4b5a69788695041327958640213579864201357986',
+                    'container_name': 'backend-api',
+                    'ip_address': '172.20.0.3',
+                    'mac_address': '02:42:ac:14:00:03',
+                    'ipv6_address': '',
+                    'network_aliases': ['backend-api', 'api']
+                }
+            ],
+            'options': {},
+            'attachable': False,
+            'ingress': False,
+            'config_from': {},
+            'config_only': False
+        }
+    
+    def create_network(
+        self,
+        name: str,
+        driver: str = 'bridge',
+        check_duplicate: bool = True,
+        internal: bool = False,
+        enable_ipv6: bool = False,
+        attachable: bool = False,
+        ingress: bool = False,
+        ipam: Optional[Dict[str, Any]] = None,
+        options: Optional[Dict[str, str]] = None,
+        labels: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """创建网络
+        
+        参数：
+        - name: 网络名称
+        - driver: 驱动类型 (bridge/host/overlay/macvlan/none)
+        - check_duplicate: 检查是否已存在同名网络
+        - internal: 是否为内部网络（限制外部访问）
+        - enable_ipv6: 是否启用 IPv6
+        - attachable: 非 swarm 服务的容器是否可以连接到此网络
+        - ingress: 是否为 swarm ingress 网络
+        - ipam: IPAM 配置
+        - options: 网络选项
+        - labels: 标签
+        
+        返回：
+        - success: 是否成功
+        - network_id: 网络 ID
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_create_network_result(name, driver)
+        
+        try:
+            create_kwargs = {
+                'name': name,
+                'driver': driver,
+                'check_duplicate': check_duplicate,
+                'internal': internal,
+                'enable_ipv6': enable_ipv6,
+            }
+            
+            if attachable:
+                create_kwargs['attachable'] = attachable
+            if ingress:
+                create_kwargs['ingress'] = ingress
+            if options:
+                create_kwargs['options'] = options
+            if labels:
+                create_kwargs['labels'] = labels
+            
+            if ipam:
+                ipam_config = []
+                for config in ipam.get('config', []):
+                    ipam_config_dict = {}
+                    if config.get('subnet'):
+                        ipam_config_dict['Subnet'] = config['subnet']
+                    if config.get('iprange'):
+                        ipam_config_dict['IPRange'] = config['iprange']
+                    if config.get('gateway'):
+                        ipam_config_dict['Gateway'] = config['gateway']
+                    if config.get('aux_addresses'):
+                        ipam_config_dict['AuxiliaryAddresses'] = config['aux_addresses']
+                    if ipam_config_dict:
+                        ipam_config.append(ipam_config_dict)
+                
+                if ipam_config or ipam.get('driver') or ipam.get('options'):
+                    ipam_pool = docker.types.IPAMPool() if not ipam_config else None
+                    if ipam_config:
+                        ipam_pool = docker.types.IPAMPool(
+                            subnet=ipam_config[0].get('Subnet'),
+                            iprange=ipam_config[0].get('IPRange'),
+                            gateway=ipam_config[0].get('Gateway'),
+                            aux_addresses=ipam_config[0].get('AuxiliaryAddresses')
+                        )
+                    
+                    ipam_configs = [ipam_pool] if ipam_pool else []
+                    for i in range(1, len(ipam_config)):
+                        pool = docker.types.IPAMPool(
+                            subnet=ipam_config[i].get('Subnet'),
+                            iprange=ipam_config[i].get('IPRange'),
+                            gateway=ipam_config[i].get('Gateway'),
+                            aux_addresses=ipam_config[i].get('AuxiliaryAddresses')
+                        )
+                        ipam_configs.append(pool)
+                    
+                    create_kwargs['ipam'] = docker.types.IPAMConfig(
+                        driver=ipam.get('driver', 'default'),
+                        pool_configs=ipam_configs,
+                        options=ipam.get('options')
+                    )
+            
+            app_logger.info(f"[Create Network] 创建网络: {name}, driver={driver}")
+            
+            network = self.client.networks.create(**create_kwargs)
+            
+            app_logger.info(f"[Create Network] 网络创建成功: {network.short_id}")
+            
+            return {
+                'success': True,
+                'network_id': network.id,
+                'short_id': network.short_id,
+                'name': network.name,
+                'message': f"网络创建成功: {network.name}"
+            }
+        except docker.errors.APIError as e:
+            log_service_error("create_network", e, name=name, driver=driver)
+            raise DockerServiceError(f"创建网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("create_network", e, name=name, driver=driver)
+            if isinstance(e, DockerServiceError):
+                raise
+            raise ContainerOperationError(f"创建网络失败: {str(e)}")
+    
+    def _get_mock_create_network_result(self, name: str, driver: str) -> Dict[str, Any]:
+        """返回模拟的创建网络结果"""
+        import random
+        
+        network_id = f"{''.join(random.choices('0123456789abcdef', k=64))}"
+        short_id = network_id[:12]
+        
+        return {
+            'success': True,
+            'network_id': network_id,
+            'short_id': short_id,
+            'name': name,
+            'message': f"网络创建成功: {name}"
+        }
+    
+    def delete_network(self, network_id: str, force: bool = False) -> Dict[str, Any]:
+        """删除网络
+        
+        参数：
+        - network_id: 网络 ID 或名称
+        - force: 是否强制删除（即使有容器连接）
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_delete_network_result(network_id)
+        
+        try:
+            app_logger.info(f"[Delete Network] 删除网络: {network_id}")
+            
+            network = self.client.networks.get(network_id)
+            
+            if force:
+                containers = network.attrs.get('Containers', {})
+                for container_id in containers.keys():
+                    try:
+                        network.disconnect(container_id, force=True)
+                        app_logger.debug(f"[Delete Network] 断开容器 {container_id[:12]} 与网络的连接")
+                    except Exception as e:
+                        app_logger.debug(f"[Delete Network] 断开容器连接失败: {e}")
+            
+            network.remove()
+            
+            app_logger.info(f"[Delete Network] 网络删除成功: {network_id}")
+            
+            return {
+                'success': True,
+                'message': f"网络删除成功: {network_id}"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"网络不存在: {network_id}")
+        except docker.errors.APIError as e:
+            log_service_error("delete_network", e, network_id=network_id)
+            raise DockerServiceError(f"删除网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("delete_network", e, network_id=network_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"删除网络失败: {str(e)}")
+    
+    def _get_mock_delete_network_result(self, network_id: str) -> Dict[str, Any]:
+        """返回模拟的删除网络结果"""
+        return {
+            'success': True,
+            'message': f"网络删除成功: {network_id}"
+        }
+    
+    def connect_container_to_network(
+        self,
+        network_id: str,
+        container_id: str,
+        ip_address: Optional[str] = None,
+        ipv6_address: Optional[str] = None,
+        network_aliases: Optional[List[str]] = None,
+        links: Optional[List[str]] = None,
+        driver_opt: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """将容器连接到网络
+        
+        参数：
+        - network_id: 网络 ID 或名称
+        - container_id: 容器 ID 或名称
+        - ip_address: 指定 IPv4 地址
+        - ipv6_address: 指定 IPv6 地址
+        - network_aliases: 网络别名列表
+        - links: 链接到其他容器
+        - driver_opt: 驱动选项
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_connect_result(network_id, container_id)
+        
+        try:
+            app_logger.info(f"[Connect Network] 连接容器 {container_id} 到网络 {network_id}")
+            
+            network = self.client.networks.get(network_id)
+            
+            connect_kwargs = {}
+            if ip_address:
+                connect_kwargs['ipv4_address'] = ip_address
+            if ipv6_address:
+                connect_kwargs['ipv6_address'] = ipv6_address
+            if network_aliases:
+                connect_kwargs['aliases'] = network_aliases
+            if links:
+                connect_kwargs['links'] = links
+            if driver_opt:
+                connect_kwargs['driver_opt'] = driver_opt
+            
+            network.connect(container_id, **connect_kwargs)
+            
+            app_logger.info(f"[Connect Network] 容器连接成功")
+            
+            return {
+                'success': True,
+                'message': f"容器已成功连接到网络"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"网络或容器不存在")
+        except docker.errors.APIError as e:
+            log_service_error("connect_container_to_network", e, network_id=network_id, container_id=container_id)
+            raise DockerServiceError(f"连接容器到网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("connect_container_to_network", e, network_id=network_id, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"连接容器到网络失败: {str(e)}")
+    
+    def _get_mock_connect_result(self, network_id: str, container_id: str) -> Dict[str, Any]:
+        """返回模拟的连接结果"""
+        return {
+            'success': True,
+            'message': f"容器已成功连接到网络"
+        }
+    
+    def disconnect_container_from_network(
+        self,
+        network_id: str,
+        container_id: str,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        """将容器从网络断开
+        
+        参数：
+        - network_id: 网络 ID 或名称
+        - container_id: 容器 ID 或名称
+        - force: 是否强制断开
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_disconnect_result(network_id, container_id)
+        
+        try:
+            app_logger.info(f"[Disconnect Network] 断开容器 {container_id} 与网络 {network_id} 的连接")
+            
+            network = self.client.networks.get(network_id)
+            
+            network.disconnect(container_id, force=force)
+            
+            app_logger.info(f"[Disconnect Network] 容器断开成功")
+            
+            return {
+                'success': True,
+                'message': f"容器已成功从网络断开"
+            }
+        except docker.errors.NotFound:
+            raise ContainerNotFoundError(f"网络或容器不存在")
+        except docker.errors.APIError as e:
+            log_service_error("disconnect_container_from_network", e, network_id=network_id, container_id=container_id)
+            raise DockerServiceError(f"断开容器与网络失败: {str(e)}")
+        except Exception as e:
+            log_service_error("disconnect_container_from_network", e, network_id=network_id, container_id=container_id)
+            if isinstance(e, (ContainerNotFoundError, DockerServiceError)):
+                raise
+            raise ContainerOperationError(f"断开容器与网络失败: {str(e)}")
+    
+    def _get_mock_disconnect_result(self, network_id: str, container_id: str) -> Dict[str, Any]:
+        """返回模拟的断开结果"""
+        return {
+            'success': True,
+            'message': f"容器已成功从网络断开"
+        }
 
 
-# 全局实例
+import asyncio
+
+
+class AsyncDockerService:
+    def __init__(self, sync_service: DockerService):
+        self._sync = sync_service
+    
+    async def list_containers_async(
+        self, 
+        all_containers: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.list_containers,
+            all_containers=all_containers,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+    
+    async def get_container_logs_async(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        before: Optional[int] = None,
+        search: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._sync.get_container_logs,
+            container_id=container_id,
+            since=since,
+            until=until,
+            tail=tail,
+            limit=limit,
+            before=before,
+            search=search
+        )
+    
+    async def get_container_logs_paginated_async(
+        self,
+        container_id: str,
+        since: Optional[int] = None,
+        until: Optional[int] = None,
+        tail: Optional[int] = None,
+        limit: Optional[int] = None,
+        start_from_head: bool = False,
+        next_token: Optional[str] = None,
+        direction: Optional[str] = None,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_logs_paginated,
+            container_id=container_id,
+            since=since,
+            until=until,
+            tail=tail,
+            limit=limit,
+            start_from_head=start_from_head,
+            next_token=next_token,
+            direction=direction,
+            search=search
+        )
+    
+    async def get_container_info_async(self, container_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_info,
+            container_id
+        )
+    
+    async def get_container_full_info_async(self, container_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_full_info,
+            container_id
+        )
+    
+    async def start_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(
+            self._sync.start_container,
+            container_id
+        )
+    
+    async def stop_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(
+            self._sync.stop_container,
+            container_id
+        )
+    
+    async def restart_container_async(self, container_id: str) -> bool:
+        return await asyncio.to_thread(
+            self._sync.restart_container,
+            container_id
+        )
+    
+    async def delete_container_async(self, container_id: str, force: bool = False) -> bool:
+        return await asyncio.to_thread(
+            self._sync.delete_container,
+            container_id,
+            force=force
+        )
+    
+    async def start_containers_batch_async(self, container_ids: List[str]) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.start_containers_batch,
+            container_ids
+        )
+    
+    async def stop_containers_batch_async(self, container_ids: List[str]) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.stop_containers_batch,
+            container_ids
+        )
+    
+    async def delete_containers_batch_async(self, container_ids: List[str], force: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.delete_containers_batch,
+            container_ids,
+            force=force
+        )
+    
+    async def get_container_stats_async(self, container_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_container_stats,
+            container_id
+        )
+    
+    async def get_all_containers_stats_async(self, all_containers: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_all_containers_stats,
+            all_containers
+        )
+    
+    async def get_containers_runtime_stats_async(self, all_containers: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_containers_runtime_stats,
+            all_containers
+        )
+    
+    async def get_image_layers_async(self, image_name_or_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_image_layers,
+            image_name_or_id
+        )
+    
+    async def list_images_async(
+        self,
+        all: bool = False,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.list_images,
+            all=all,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+    
+    async def get_image_info_async(self, image_name_or_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_image_info,
+            image_name_or_id
+        )
+    
+    async def get_image_history_async(self, image_name_or_id: str) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._sync.get_image_history,
+            image_name_or_id
+        )
+    
+    async def pull_image_async(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        platform: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.pull_image,
+            image=image,
+            tag=tag,
+            platform=platform,
+            auth_config=auth_config
+        )
+    
+    async def push_image_async(
+        self,
+        image: str,
+        tag: Optional[str] = None,
+        target_image: Optional[str] = None,
+        auth_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.push_image,
+            image=image,
+            tag=tag,
+            target_image=target_image,
+            auth_config=auth_config
+        )
+    
+    async def delete_image_async(
+        self,
+        image: str,
+        force: bool = False,
+        noprune: bool = False
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.delete_image,
+            image=image,
+            force=force,
+            noprune=noprune
+        )
+    
+    async def add_image_tag_async(
+        self,
+        image: str,
+        new_tag: str,
+        repository: Optional[str] = None,
+        tag: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.add_image_tag,
+            image=image,
+            new_tag=new_tag,
+            repository=repository,
+            tag=tag
+        )
+    
+    async def remove_image_tag_async(
+        self,
+        image: str,
+        tag: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.remove_image_tag,
+            image=image,
+            tag=tag
+        )
+    
+    async def list_networks_async(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None,
+        driver: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.list_networks,
+            page=page,
+            page_size=page_size,
+            search=search,
+            driver=driver
+        )
+    
+    async def get_network_info_async(self, network_id: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_network_info,
+            network_id
+        )
+    
+    async def create_network_async(
+        self,
+        name: str,
+        driver: str = 'bridge',
+        check_duplicate: bool = True,
+        internal: bool = False,
+        enable_ipv6: bool = False,
+        attachable: bool = False,
+        ingress: bool = False,
+        ipam: Optional[Dict[str, Any]] = None,
+        options: Optional[Dict[str, str]] = None,
+        labels: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.create_network,
+            name=name,
+            driver=driver,
+            check_duplicate=check_duplicate,
+            internal=internal,
+            enable_ipv6=enable_ipv6,
+            attachable=attachable,
+            ingress=ingress,
+            ipam=ipam,
+            options=options,
+            labels=labels
+        )
+    
+    async def delete_network_async(self, network_id: str, force: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.delete_network,
+            network_id,
+            force=force
+        )
+    
+    async def connect_container_to_network_async(
+        self,
+        network_id: str,
+        container_id: str,
+        ip_address: Optional[str] = None,
+        ipv6_address: Optional[str] = None,
+        network_aliases: Optional[List[str]] = None,
+        links: Optional[List[str]] = None,
+        driver_opt: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.connect_container_to_network,
+            network_id=network_id,
+            container_id=container_id,
+            ip_address=ip_address,
+            ipv6_address=ipv6_address,
+            network_aliases=network_aliases,
+            links=links,
+            driver_opt=driver_opt
+        )
+    
+    async def disconnect_container_from_network_async(
+        self,
+        network_id: str,
+        container_id: str,
+        force: bool = False
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.disconnect_container_from_network,
+            network_id=network_id,
+            container_id=container_id,
+            force=force
+        )
+
+
 docker_service = DockerService()
+async_docker_service = AsyncDockerService(docker_service)

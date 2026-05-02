@@ -203,12 +203,59 @@ const containerApi = {
 
 
 const imageApi = {
-  async getImageLayers(imageName) {
-    return get(`/api/images/${encodeURIComponent(imageName)}/layers`)
+  async getImages(params = {}) {
+    return get('/api/images', params)
   },
   
-  async getImageInfo(imageName) {
-    return get(`/api/images/${encodeURIComponent(imageName)}/info`)
+  async getImageInfo(imageNameOrId) {
+    return get(`/api/images/${encodeURIComponent(imageNameOrId)}`)
+  },
+  
+  async getImageHistory(imageNameOrId) {
+    return get(`/api/images/${encodeURIComponent(imageNameOrId)}/history`)
+  },
+  
+  async pullImage(data) {
+    return post('/api/images/pull', data)
+  },
+  
+  async pushImage(data) {
+    return post('/api/images/push', data)
+  },
+  
+  async deleteImage(imageNameOrId, params = {}) {
+    return del(`/api/images/${encodeURIComponent(imageNameOrId)}`, params)
+  },
+  
+  async addTag(imageNameOrId, data) {
+    return post(`/api/images/${encodeURIComponent(imageNameOrId)}/tags`, data)
+  },
+  
+  async removeTag(imageNameOrId, tag) {
+    return del(`/api/images/${encodeURIComponent(imageNameOrId)}/tags`, { tag })
+  }
+}
+
+
+const registryApi = {
+  async getRegistries() {
+    return get('/api/registries')
+  },
+  
+  async getRegistry(registryId) {
+    return get(`/api/registries/${registryId}`)
+  },
+  
+  async createRegistry(data) {
+    return post('/api/registries', data)
+  },
+  
+  async updateRegistry(registryId, data) {
+    return put(`/api/registries/${registryId}`, data)
+  },
+  
+  async deleteRegistry(registryId) {
+    return del(`/api/registries/${registryId}`)
   }
 }
 
@@ -343,6 +390,91 @@ const hostApi = {
 }
 
 
+const scanApi = {
+  async getTrivyStatus() {
+    return get('/api/trivy/status')
+  },
+  
+  async scanImage(data) {
+    return post('/api/images/scan', data)
+  },
+  
+  async getScans(params = {}) {
+    return get('/api/scans', params)
+  },
+  
+  async getScanDetail(scanId) {
+    return get(`/api/scans/${scanId}`)
+  },
+  
+  async deleteScan(scanId) {
+    return del(`/api/scans/${scanId}`)
+  },
+  
+  async getScansSummary(params = {}) {
+    return get('/api/scans/summary', params)
+  },
+  
+  async getVulnerabilityTrends(params = {}) {
+    return get('/api/scans/trends', params)
+  }
+}
+
+
+const buildApi = {
+  async getBuildServiceStatus() {
+    return get('/api/build/service/status')
+  },
+  
+  async buildImage(data) {
+    return post('/api/images/build', data)
+  },
+  
+  async getBuilds(params = {}) {
+    return get('/api/builds', params)
+  },
+  
+  async getBuildDetail(buildId) {
+    return get(`/api/builds/${buildId}`)
+  },
+  
+  async getBuildLogs(buildId) {
+    return get(`/api/builds/${buildId}/logs`)
+  },
+  
+  async deleteBuild(buildId) {
+    return del(`/api/builds/${buildId}`)
+  }
+}
+
+
+const networkApi = {
+  async getNetworks(params = {}) {
+    return get('/api/networks', params)
+  },
+  
+  async getNetworkInfo(networkId) {
+    return get(`/api/networks/${encodeURIComponent(networkId)}`)
+  },
+  
+  async createNetwork(data) {
+    return post('/api/networks', data)
+  },
+  
+  async deleteNetwork(networkId, params = {}) {
+    return del(`/api/networks/${encodeURIComponent(networkId)}`, params)
+  },
+  
+  async connectContainer(networkId, data) {
+    return post(`/api/networks/${encodeURIComponent(networkId)}/connect`, data)
+  },
+  
+  async disconnectContainer(networkId, data) {
+    return post(`/api/networks/${encodeURIComponent(networkId)}/disconnect`, data)
+  }
+}
+
+
 export {
   globalLoading,
   getErrorMessage,
@@ -355,11 +487,15 @@ export {
   del,
   containerApi,
   imageApi,
+  registryApi,
   dashboardApi,
   authApi,
   auditLogApi,
   userManagementApi,
-  hostApi
+  hostApi,
+  scanApi,
+  buildApi,
+  networkApi
 }
 
 export default {
@@ -372,9 +508,13 @@ export default {
   del,
   containerApi,
   imageApi,
+  registryApi,
   dashboardApi,
   authApi,
   auditLogApi,
   userManagementApi,
-  hostApi
+  hostApi,
+  scanApi,
+  buildApi,
+  networkApi
 }
