@@ -66,124 +66,123 @@
           class="network-card"
           :class="{ 'card-default': network.is_default }"
         >
-              <div class="network-card-header">
-                <div class="network-icon">
-                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="5" r="3"></circle>
-                    <circle cx="6" cy="12" r="3"></circle>
-                    <circle cx="18" cy="12" r="3"></circle>
-                    <circle cx="12" cy="19" r="3"></circle>
-                    <line x1="9.5" y1="7" x2="8.5" y2="9.5"></line>
-                    <line x1="14.5" y1="7" x2="15.5" y2="9.5"></line>
-                    <line x1="8.5" y1="14.5" x2="9.5" y2="17"></line>
-                    <line x1="15.5" y1="14.5" x2="14.5" y2="17"></line>
-                  </svg>
-                </div>
-                <div class="network-info">
-                  <div class="network-name">
-                    <span class="primary-name">{{ network.name }}</span>
-                    <span class="badge badge-default" v-if="network.is_default">
-                      默认
-                    </span>
-                    <span 
-                      class="badge" 
-                      :class="'badge-' + getDriverBadgeClass(network.driver)"
-                    >
-                      {{ network.driver }}
-                    </span>
-                    <span class="badge badge-secondary" v-if="network.internal">
-                      内部
-                    </span>
-                    <span class="badge badge-secondary" v-if="network.enable_ipv6">
-                      IPv6
-                    </span>
-                  </div>
-                  <div class="network-meta">
-                    <span class="meta-item">
-                      <span class="meta-label">ID:</span>
-                      <span class="meta-value">{{ network.id ? network.id.substring(0, 12) : '-' }}</span>
-                    </span>
-                    <span class="meta-item" v-if="network.subnet">
-                      <span class="meta-label">子网:</span>
-                      <span class="meta-value">{{ network.subnet }}</span>
-                    </span>
-                    <span class="meta-item" v-if="network.gateway">
-                      <span class="meta-label">网关:</span>
-                      <span class="meta-value">{{ network.gateway }}</span>
-                    </span>
-                    <span class="meta-item">
-                      <span class="meta-label">容器:</span>
-                      <span class="meta-value">{{ network.container_count || 0 }}</span>
-                    </span>
-                    <span class="meta-item" v-if="network.created">
-                      <span class="meta-label">创建时间:</span>
-                      <span class="meta-value">{{ formatDate(network.created) }}</span>
-                    </span>
-                  </div>
-                </div>
+          <div class="network-card-header">
+            <div class="network-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="5" r="3"></circle>
+                <circle cx="6" cy="12" r="3"></circle>
+                <circle cx="18" cy="12" r="3"></circle>
+                <circle cx="12" cy="19" r="3"></circle>
+                <line x1="9.5" y1="7" x2="8.5" y2="9.5"></line>
+                <line x1="14.5" y1="7" x2="15.5" y2="9.5"></line>
+                <line x1="8.5" y1="14.5" x2="9.5" y2="17"></line>
+                <line x1="15.5" y1="14.5" x2="14.5" y2="17"></line>
+              </svg>
+            </div>
+            <div class="network-info">
+              <div class="network-name">
+                <span class="primary-name">{{ network.name }}</span>
+                <span class="badge badge-default" v-if="network.is_default">
+                  默认
+                </span>
+                <span 
+                  class="badge" 
+                  :class="'badge-' + getDriverBadgeClass(network.driver)"
+                >
+                  {{ network.driver }}
+                </span>
+                <span class="badge badge-secondary" v-if="network.internal">
+                  内部
+                </span>
+                <span class="badge badge-secondary" v-if="network.enable_ipv6">
+                  IPv6
+                </span>
               </div>
-              <div class="network-card-footer">
-                <div class="action-buttons">
-                  <button 
-                    class="btn btn-ghost btn-sm action-btn"
-                    @click="viewNetworkDetail(network)"
-                    title="查看详情"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
-                      <circle cx="12" cy="12" r="3"></circle>
-                    </svg>
-                    详情
-                  </button>
-                  <button 
-                    class="btn btn-ghost btn-sm action-btn"
-                    @click="openConnectModal(network)"
-                    title="连接容器"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
-                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
-                    </svg>
-                    连接
-                  </button>
-                  <button 
-                    v-if="!network.is_default"
-                    class="btn btn-ghost btn-sm action-btn action-btn-danger"
-                    @click="confirmDeleteNetwork(network)"
-                    title="删除网络"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="3 6 5 6 21 6"></polyline>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-                    </svg>
-                    删除
-                  </button>
-                </div>
+              <div class="network-meta">
+                <span class="meta-item">
+                  <span class="meta-label">ID:</span>
+                  <span class="meta-value">{{ network.id ? network.id.substring(0, 12) : '-' }}</span>
+                </span>
+                <span class="meta-item" v-if="network.subnet">
+                  <span class="meta-label">子网:</span>
+                  <span class="meta-value">{{ network.subnet }}</span>
+                </span>
+                <span class="meta-item" v-if="network.gateway">
+                  <span class="meta-label">网关:</span>
+                  <span class="meta-value">{{ network.gateway }}</span>
+                </span>
+                <span class="meta-item">
+                  <span class="meta-label">容器:</span>
+                  <span class="meta-value">{{ network.container_count || 0 }}</span>
+                </span>
+                <span class="meta-item" v-if="network.created">
+                  <span class="meta-label">创建时间:</span>
+                  <span class="meta-value">{{ formatDate(network.created) }}</span>
+                </span>
               </div>
             </div>
           </div>
-
-          <div v-if="totalPages > 1" class="pagination">
-            <button 
-              class="btn btn-outline btn-sm" 
-              @click="currentPage = currentPage - 1; fetchNetworks()"
-              :disabled="currentPage <= 1"
-            >
-              上一页
-            </button>
-            <span class="page-info">
-              第 {{ currentPage }} 页 / 共 {{ totalPages }} 页 ({{ total }} 个网络)
-            </span>
-            <button 
-              class="btn btn-outline btn-sm" 
-              @click="currentPage = currentPage + 1; fetchNetworks()"
-              :disabled="currentPage >= totalPages"
-            >
-              下一页
-            </button>
+          <div class="network-card-footer">
+            <div class="action-buttons">
+              <button 
+                class="btn btn-ghost btn-sm action-btn"
+                @click="viewNetworkDetail(network)"
+                title="查看详情"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+                详情
+              </button>
+              <button 
+                class="btn btn-ghost btn-sm action-btn"
+                @click="openConnectModal(network)"
+                title="连接容器"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                </svg>
+                连接
+              </button>
+              <button 
+                v-if="!network.is_default"
+                class="btn btn-ghost btn-sm action-btn action-btn-danger"
+                @click="confirmDeleteNetwork(network)"
+                title="删除网络"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                删除
+              </button>
+            </div>
           </div>
         </div>
+
+        <div v-if="totalPages > 1" class="pagination">
+          <button 
+            class="btn btn-outline btn-sm" 
+            @click="currentPage = currentPage - 1; fetchNetworks()"
+            :disabled="currentPage <= 1"
+          >
+            上一页
+          </button>
+          <span class="page-info">
+            第 {{ currentPage }} 页 / 共 {{ totalPages }} 页 ({{ total }} 个网络)
+          </span>
+          <button 
+            class="btn btn-outline btn-sm" 
+            @click="currentPage = currentPage + 1; fetchNetworks()"
+            :disabled="currentPage >= totalPages"
+          >
+            下一页
+          </button>
+        </div>
       </div>
+    </div>
 
     <div v-if="showCreateModal" class="modal-overlay" @click.self="closeCreateModal">
       <div class="modal modal-medium">

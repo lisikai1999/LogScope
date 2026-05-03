@@ -1,36 +1,10 @@
 <template>
-  <div class="image-management">
-    <header class="header">
-      <div class="container">
-        <div class="header-content">
-          <div class="page-title">
-            <router-link to="/" class="back-link">
-              ← 返回容器列表
-            </router-link>
-            <h1>镜像管理</h1>
-          </div>
-          <div class="header-actions">
-            <div class="user-menu">
-              <span class="user-info">
-                <span class="user-avatar">{{ currentUser?.username?.charAt(0).toUpperCase() }}</span>
-                <span class="user-name">{{ currentUser?.username }}</span>
-                <span class="user-role role-admin">管理员</span>
-              </span>
-              <button class="btn btn-ghost btn-sm" @click="logout" title="退出登录">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                  <polyline points="16 17 21 12 16 7"></polyline>
-                  <line x1="21" y1="12" x2="9" y2="12"></line>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <main class="main-content">
-      <div class="container">
+  <AppLayout
+    :currentUser="currentUser"
+    :page-title="'镜像管理'"
+    @refresh="fetchImages"
+    @logout="logout"
+  >
         <div class="action-bar">
           <button class="btn btn-primary" @click="openPullModal">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -201,8 +175,6 @@
             </button>
           </div>
         </div>
-      </div>
-    </main>
 
     <div v-if="showPullModal" class="modal-overlay" @click.self="closePullModal">
       <div class="modal modal-medium">
@@ -586,12 +558,13 @@
     <div v-if="toastMessage" class="toast" :class="toastType">
       {{ toastMessage }}
     </div>
-  </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import AppLayout from '../components/AppLayout.vue'
 import { useAuth } from '../composables/useAuth'
 import { imageApi, registryApi } from '../api/containerApi'
 

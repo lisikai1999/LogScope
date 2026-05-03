@@ -1,36 +1,10 @@
 <template>
-  <div class="registry-management">
-    <header class="header">
-      <div class="container">
-        <div class="header-content">
-          <div class="page-title">
-            <router-link to="/images" class="back-link">
-              ← 返回镜像管理
-            </router-link>
-            <h1>镜像仓库配置</h1>
-          </div>
-          <div class="header-actions">
-            <div class="user-menu">
-              <span class="user-info">
-                <span class="user-avatar">{{ currentUser?.username?.charAt(0).toUpperCase() }}</span>
-                <span class="user-name">{{ currentUser?.username }}</span>
-                <span class="user-role role-admin">管理员</span>
-              </span>
-              <button class="btn btn-ghost btn-sm" @click="logout" title="退出登录">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                  <polyline points="16 17 21 12 16 7"></polyline>
-                  <line x1="21" y1="12" x2="9" y2="12"></line>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <main class="main-content">
-      <div class="container">
+  <AppLayout
+    :currentUser="currentUser"
+    :page-title="'镜像仓库配置'"
+    @refresh="fetchRegistries"
+    @logout="logout"
+  >
         <div class="action-bar">
           <button class="btn btn-primary" @click="openCreateModal">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -153,8 +127,6 @@
             </div>
           </div>
         </div>
-      </div>
-    </main>
 
     <div v-if="showRegistryModal" class="modal-overlay" @click.self="closeRegistryModal">
       <div class="modal modal-large">
@@ -422,12 +394,13 @@
     <div v-if="toastMessage" class="toast" :class="toastType">
       {{ toastMessage }}
     </div>
-  </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import AppLayout from '../components/AppLayout.vue'
 import { useAuth } from '../composables/useAuth'
 import { registryApi } from '../api/containerApi'
 

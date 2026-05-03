@@ -461,8 +461,6 @@
             </div>
           </div>
         </div>
-      </div>
-    </main>
 
     <div v-if="showCreateVolumeModal" class="modal-overlay" @click.self="closeCreateVolumeModal">
       <div class="modal modal-medium">
