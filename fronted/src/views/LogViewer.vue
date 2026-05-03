@@ -62,7 +62,7 @@
                 <input
                   type="number"
                   v-model.number="tailCount"
-                  placeholder="100"
+                  placeholder="1000"
                   min="1"
                   class="filter-input filter-input-number"
                 />
@@ -331,7 +331,7 @@ const MAX_RETRY_COUNT = 3
 
 const sinceTime = ref('')
 const untilTime = ref('')
-const tailCount = ref(null)
+const tailCount = ref(1000)
 const filterStdout = ref(true)
 const filterStderr = ref(true)
 const autoRefresh = ref(false)
@@ -996,7 +996,7 @@ const setTimeRange = (range) => {
       break
   }
 
-  tailCount.value = null
+  tailCount.value = 1000
   fetchLogs()
 }
 
@@ -1012,7 +1012,7 @@ const formatDateTimeLocal = (date) => {
 const clearFilters = () => {
   sinceTime.value = ''
   untilTime.value = ''
-  tailCount.value = null
+  tailCount.value = 1000
   filterStdout.value = true
   filterStderr.value = true
   searchQuery.value = ''

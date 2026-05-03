@@ -547,3 +547,115 @@ ERROR_CODE_MAP = {
 
 def get_error_code_by_status(status_code: int) -> str:
     return ERROR_CODE_MAP.get(status_code, f"HTTP_{status_code}")
+
+
+class VolumeNotFoundError(AppException):
+    status_code = 404
+    error_code = "VOLUME_NOT_FOUND"
+    message = "Volume 不存在"
+
+    def __init__(self, volume_name: str = None, message: str = None):
+        details = {}
+        if volume_name:
+            details["volume_name"] = volume_name
+            message = message or f"Volume 不存在: {volume_name}"
+        super().__init__(message=message, details=details)
+
+
+class VolumeAlreadyExistsError(ResourceConflictError):
+    error_code = "VOLUME_ALREADY_EXISTS"
+    message = "Volume 已存在"
+
+    def __init__(self, volume_name: str = None, message: str = None):
+        details = {}
+        if volume_name:
+            details["volume_name"] = volume_name
+            message = message or f"Volume 已存在: {volume_name}"
+        super().__init__(
+            message=message,
+            resource_type="volume",
+            resource_id=volume_name
+        )
+
+
+class VolumeInUseError(ResourceConflictError):
+    error_code = "VOLUME_IN_USE"
+    message = "Volume 正在使用中"
+
+    def __init__(self, volume_name: str = None, message: str = None, container_count: int = 0):
+        details = {"container_count": container_count}
+        if volume_name:
+            details["volume_name"] = volume_name
+            message = message or f"Volume '{volume_name}' 正在被 {container_count} 个容器使用"
+        super().__init__(
+            message=message,
+            resource_type="volume",
+            resource_id=volume_name,
+            conflict_reason="in_use"
+        )
+
+
+class VolumeOperationError(AppException):
+    status_code = 500
+    error_code = "VOLUME_OPERATION_ERROR"
+    message = "Volume 操作失败"
+
+    def __init__(
+        self,
+        message: str = None,
+        volume_name: str = None,
+        operation: str = None
+    ):
+        details = {}
+        if volume_name:
+            details["volume_name"] = volume_name
+        if operation:
+            details["operation"] = operation
+        
+        if not message:
+            parts = ["Volume 操作失败"]
+            if operation:
+                parts.append(f": {operation}")
+            if volume_name:
+                parts.append(f" ({volume_name})")
+            message = "".join(parts)
+        
+        super().__init__(message=message, details=details)
+
+
+class VolumeBackupError(VolumeOperationError):
+    error_code = "VOLUME_BACKUP_ERROR"
+    message = "Volume 备份失败"
+
+
+class VolumeRestoreError(VolumeOperationError):
+    error_code = "VOLUME_RESTORE_ERROR"
+    message = "Volume 恢复失败"
+
+
+class BindMountError(AppException):
+    status_code = 500
+    error_code = "BIND_MOUNT_ERROR"
+    message = "绑定挂载操作失败"
+
+    def __init__(
+        self,
+        message: str = None,
+        source_path: str = None,
+        destination_path: str = None,
+        operation: str = None
+    ):
+        details = {}
+        if source_path:
+            details["source_path"] = source_path
+        if destination_path:
+            details["destination_path"] = destination_path
+        if operation:
+            details["operation"] = operation
+        super().__init__(message=message or self.message, details=details)
+
+
+class StorageAnalysisError(AppException):
+    status_code = 500
+    error_code = "STORAGE_ANALYSIS_ERROR"
+    message = "存储分析失败"

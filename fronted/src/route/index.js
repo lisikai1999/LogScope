@@ -7,6 +7,12 @@ import Login from '../views/Login.vue'
 import UserManagement from '../views/UserManagement.vue'
 import AuditLog from '../views/AuditLog.vue'
 import HostManagement from '../views/HostManagement.vue'
+import ImageManagement from '../views/ImageManagement.vue'
+import RegistryManagement from '../views/RegistryManagement.vue'
+import ImageScan from '../views/ImageScan.vue'
+import ImageBuild from '../views/ImageBuild.vue'
+import NetworkManagement from '../views/NetworkManagement.vue'
+import StorageManagement from '../views/StorageManagement.vue'
 
 
 const routes = [
@@ -56,6 +62,42 @@ const routes = [
     path: '/hosts',
     name: 'HostManagement',
     component: HostManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/images',
+    name: 'ImageManagement',
+    component: ImageManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/registries',
+    name: 'RegistryManagement',
+    component: RegistryManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/scans',
+    name: 'ImageScan',
+    component: ImageScan,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/builds',
+    name: 'ImageBuild',
+    component: ImageBuild,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/networks',
+    name: 'NetworkManagement',
+    component: NetworkManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/storage',
+    name: 'StorageManagement',
+    component: StorageManagement,
     meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]
