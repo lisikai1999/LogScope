@@ -184,7 +184,6 @@
           </div>
         </div>
       </div>
-    </main>
 
     <div v-if="showCreateModal" class="modal-overlay" @click.self="closeCreateModal">
       <div class="modal modal-medium">
