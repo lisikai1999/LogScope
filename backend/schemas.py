@@ -882,14 +882,14 @@ class VolumeDelete(BaseModel):
 
 
 class VolumeBackupRequest(BaseModel):
-    volume_name: str = Field(..., description="要备份的 Volume 名称")
+    volume_name: Optional[str] = Field(None, description="要备份的 Volume 名称（可选，从URL路径获取）")
     backup_path: Optional[str] = Field(None, description="备份文件路径")
     compression: str = Field("gzip", description="压缩方式：gzip, tar, none")
 
 
 class VolumeRestoreRequest(BaseModel):
     backup_path: str = Field(..., description="备份文件路径")
-    volume_name: str = Field(..., description="恢复的目标 Volume 名称")
+    volume_name: Optional[str] = Field(None, description="恢复的目标 Volume 名称（可选，从URL路径获取）")
 
 
 class VolumeBackupResponse(BaseModel):
