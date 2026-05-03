@@ -1,97 +1,71 @@
 <template>
-  <div class="network-management">
-    <header class="header">
-      <div class="container">
-        <div class="header-content">
-          <div class="page-title">
-            <router-link to="/" class="back-link">
-              ← 返回容器列表
-            </router-link>
-            <h1>网络管理</h1>
-          </div>
-          <div class="header-actions">
-            <div class="user-menu">
-              <span class="user-info">
-                <span class="user-avatar">{{ currentUser?.username?.charAt(0).toUpperCase() }}</span>
-                <span class="user-name">{{ currentUser?.username }}</span>
-                <span class="user-role role-admin">管理员</span>
-              </span>
-              <button class="btn btn-ghost btn-sm" @click="logout" title="退出登录">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                  <polyline points="16 17 21 12 16 7"></polyline>
-                  <line x1="21" y1="12" x2="9" y2="12"></line>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
+  <AppLayout
+    :currentUser="currentUser"
+    :page-title="'网络管理'"
+    @refresh="fetchNetworks"
+    @logout="logout"
+  >
+    <div class="action-bar">
+      <button class="btn btn-primary" @click="openCreateModal">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="16"></line>
+          <line x1="8" y1="12" x2="16" y2="12"></line>
+        </svg>
+        创建网络
+      </button>
+      <button class="btn btn-outline" @click="fetchNetworks">
+        刷新
+      </button>
+      <div class="search-box">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"></circle>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        <input 
+          type="text" 
+          v-model="searchQuery" 
+          placeholder="搜索网络名称、ID..."
+          @keyup.enter="fetchNetworks"
+        />
       </div>
-    </header>
+      <div class="filter-select">
+        <select v-model="filterDriver" @change="fetchNetworks" class="form-input filter-select-input">
+          <option value="">所有驱动</option>
+          <option value="bridge">bridge</option>
+          <option value="host">host</option>
+          <option value="overlay">overlay</option>
+          <option value="macvlan">macvlan</option>
+          <option value="none">none</option>
+        </select>
+      </div>
+    </div>
 
-    <main class="main-content">
-      <div class="container">
-        <div class="action-bar">
-          <button class="btn btn-primary" @click="openCreateModal">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="12" y1="8" x2="12" y2="16"></line>
-              <line x1="8" y1="12" x2="16" y2="12"></line>
-            </svg>
-            创建网络
-          </button>
-          <button class="btn btn-outline" @click="fetchNetworks">
-            刷新
-          </button>
-          <div class="search-box">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="11" cy="11" r="8"></circle>
-              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-            </svg>
-            <input 
-              type="text" 
-              v-model="searchQuery" 
-              placeholder="搜索网络名称、ID..."
-              @keyup.enter="fetchNetworks"
-            />
-          </div>
-          <div class="filter-select">
-            <select v-model="filterDriver" @change="fetchNetworks" class="form-input filter-select-input">
-              <option value="">所有驱动</option>
-              <option value="bridge">bridge</option>
-              <option value="host">host</option>
-              <option value="overlay">overlay</option>
-              <option value="macvlan">macvlan</option>
-              <option value="none">none</option>
-            </select>
-          </div>
-        </div>
+    <div v-if="loading" class="loading-state">
+      <div class="loading-spinner"></div>
+      <p>加载中...</p>
+    </div>
 
-        <div v-if="loading" class="loading-state">
-          <div class="loading-spinner"></div>
-          <p>加载中...</p>
-        </div>
+    <div v-else-if="error" class="error-state">
+      <div class="error-icon">⚠️</div>
+      <p>{{ error }}</p>
+      <button class="btn btn-primary" @click="fetchNetworks">重试</button>
+    </div>
 
-        <div v-else-if="error" class="error-state">
-          <div class="error-icon">⚠️</div>
-          <p>{{ error }}</p>
-          <button class="btn btn-primary" @click="fetchNetworks">重试</button>
-        </div>
+    <div v-else class="network-list-container">
+      <div v-if="networks.length === 0" class="empty-state">
+        <div class="empty-icon">🌐</div>
+        <p>暂无网络</p>
+        <p class="text-muted">点击上方"创建网络"按钮来创建新网络</p>
+      </div>
 
-        <div v-else class="network-list-container">
-          <div v-if="networks.length === 0" class="empty-state">
-            <div class="empty-icon">🌐</div>
-            <p>暂无网络</p>
-            <p class="text-muted">点击上方"创建网络"按钮来创建新网络</p>
-          </div>
-
-          <div v-else class="network-list">
-            <div 
-              v-for="network in networks" 
-              :key="network.id" 
-              class="network-card"
-              :class="{ 'card-default': network.is_default }"
-            >
+      <div v-else class="network-list">
+        <div 
+          v-for="network in networks" 
+          :key="network.id" 
+          class="network-card"
+          :class="{ 'card-default': network.is_default }"
+        >
               <div class="network-card-header">
                 <div class="network-icon">
                   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -618,12 +592,13 @@
     <div v-if="toastMessage" class="toast" :class="toastType">
       {{ toastMessage }}
     </div>
-  </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import AppLayout from '../components/AppLayout.vue'
 import { useAuth } from '../composables/useAuth'
 import { networkApi, containerApi } from '../api/containerApi'
 
@@ -1023,61 +998,6 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.network-management {
-  min-height: 100vh;
-  background-color: var(--bg-secondary);
-}
-
-.header {
-  background-color: var(--bg-primary);
-  border-bottom: 1px solid var(--border-color);
-  padding: 1rem 0;
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.page-title h1 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin: 0;
-}
-
-.back-link {
-  color: var(--primary-color);
-  text-decoration: none;
-  font-size: 0.875rem;
-}
-
-.back-link:hover {
-  text-decoration: underline;
-}
-
-.header-actions {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-}
-
-.main-content {
-  padding: 1.5rem 0;
-}
-
-.container {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 0 1rem;
-}
-
 .action-bar {
   display: flex;
   gap: 0.75rem;
@@ -1565,50 +1485,6 @@ onMounted(() => {
   background-color: rgba(239, 68, 68, 0.1);
 }
 
-.user-menu {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  background-color: var(--bg-secondary);
-  border-radius: 8px;
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.user-avatar {
-  width: 28px;
-  height: 28px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  font-size: 0.875rem;
-}
-
-.user-name {
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.user-role {
-  font-size: 0.7rem;
-  padding: 0.125rem 0.375rem;
-  border-radius: 4px;
-}
-
-.user-role.role-admin {
-  background-color: rgba(245, 158, 11, 0.1);
-  color: #d97706;
-}
-
 .detail-section {
   margin-bottom: 1.5rem;
 }
@@ -1747,17 +1623,6 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .header-content {
-    flex-direction: column;
-    gap: 1rem;
-    align-items: flex-start;
-  }
-  
-  .header-actions {
-    width: 100%;
-    flex-wrap: wrap;
-  }
-  
   .network-list {
     grid-template-columns: 1fr;
   }

@@ -359,7 +359,6 @@ const toggleImageMenu = () => {
 .nav-toggle {
   display: flex;
   align-items: center;
-  justify-content: space-between;
 }
 
 .nav-arrow {
@@ -372,7 +371,7 @@ const toggleImageMenu = () => {
 
 .nav-submenu {
   list-style: none;
-  padding: 0.25rem 0 0.25rem 2rem;
+  padding: 0.25rem 0 0.25rem 1.5rem;
   margin: 0;
 }
 
