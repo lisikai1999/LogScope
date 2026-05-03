@@ -1,37 +1,11 @@
 <template>
-  <div class="host-management">
-    <header class="header">
-      <div class="container">
-        <div class="header-content">
-          <div class="page-title">
-            <router-link to="/" class="back-link">
-              ← 返回容器列表
-            </router-link>
-            <h1>主机管理</h1>
-          </div>
-          <div class="header-actions">
-            <div class="user-menu">
-              <span class="user-info">
-                <span class="user-avatar">{{ currentUser?.username?.charAt(0).toUpperCase() }}</span>
-                <span class="user-name">{{ currentUser?.username }}</span>
-                <span class="user-role role-admin">管理员</span>
-              </span>
-              <button class="btn btn-ghost btn-sm" @click="logout" title="退出登录">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                  <polyline points="16 17 21 12 16 7"></polyline>
-                  <line x1="21" y1="12" x2="9" y2="12"></line>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </header>
-
-    <main class="main-content">
-      <div class="container">
-        <div class="action-bar">
+  <AppLayout
+    :currentUser="currentUser"
+    :page-title="'主机管理'"
+    @refresh="fetchHosts"
+    @logout="logout"
+  >
+    <div class="action-bar">
           <button class="btn btn-primary" @click="openCreateModal">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -334,13 +308,14 @@
     <div v-if="toastMessage" class="toast" :class="toastType">
       {{ toastMessage }}
     </div>
-  </div>
+  </AppLayout>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
+import AppLayout from '../components/AppLayout.vue'
 import { useAuth } from '../composables/useAuth'
 
 
@@ -654,61 +629,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.host-management {
-  min-height: 100vh;
-  background-color: var(--bg-secondary);
-}
-
-.header {
-  background-color: var(--bg-primary);
-  border-bottom: 1px solid var(--border-color);
-  padding: 1rem 0;
-}
-
-.header-content {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.page-title {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.page-title h1 {
-  font-size: 1.5rem;
-  font-weight: 700;
-  margin: 0;
-}
-
-.back-link {
-  color: var(--primary-color);
-  text-decoration: none;
-  font-size: 0.875rem;
-}
-
-.back-link:hover {
-  text-decoration: underline;
-}
-
-.header-actions {
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-}
-
-.main-content {
-  padding: 1.5rem 0;
-}
-
-.container {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 1rem;
-}
-
 .card {
   background-color: var(--bg-primary);
   border-radius: 0.75rem;
@@ -1024,50 +944,6 @@ onUnmounted(() => {
 
 .action-btn-danger:hover:not(:disabled) {
   background-color: rgba(239, 68, 68, 0.1);
-}
-
-.user-menu {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.5rem;
-  background-color: var(--bg-secondary);
-  border-radius: 8px;
-}
-
-.user-info {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.user-avatar {
-  width: 28px;
-  height: 28px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: white;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  font-size: 0.875rem;
-}
-
-.user-name {
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.user-role {
-  font-size: 0.7rem;
-  padding: 0.125rem 0.375rem;
-  border-radius: 4px;
-}
-
-.user-role.role-admin {
-  background-color: rgba(245, 158, 11, 0.1);
-  color: #d97706;
 }
 
 .badge {
