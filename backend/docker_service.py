@@ -3308,6 +3308,886 @@ class DockerService:
             'message': f"容器已成功从网络断开"
         }
 
+    def list_volumes(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """获取 Volume 列表
+        
+        参数：
+        - page: 页码
+        - page_size: 每页数量
+        - search: 搜索关键词
+        
+        返回：
+        - total: 总数
+        - page: 当前页码
+        - page_size: 每页数量
+        - total_pages: 总页数
+        - data: Volume 列表
+        """
+        if not self.docker_available:
+            return self._get_mock_volumes(page, page_size, search)
+        
+        try:
+            volumes = self.client.volumes.list()
+            result = []
+            
+            volume_container_map = self._get_volume_container_mapping()
+            
+            for volume in volumes:
+                try:
+                    attrs = volume.attrs
+                    name = attrs.get('Name', '')
+                    container_count = volume_container_map.get(name, 0)
+                    
+                    result.append({
+                        'id': attrs.get('Id', ''),
+                        'name': name,
+                        'driver': attrs.get('Driver', ''),
+                        'mountpoint': attrs.get('Mountpoint', ''),
+                        'created': attrs.get('CreatedAt', ''),
+                        'labels': attrs.get('Labels', {}),
+                        'options': attrs.get('Options', {}),
+                        'scope': attrs.get('Scope', ''),
+                        'container_count': container_count,
+                        'is_unused': container_count == 0
+                    })
+                except Exception as e:
+                    log_service_error("list_volumes", e, volume_name=volume.name if hasattr(volume, 'name') else 'unknown')
+            
+            return self._paginate_volumes(result, page, page_size, search)
+        except Exception as e:
+            log_service_error("list_volumes", e, page=page, page_size=page_size, search=search)
+            return {
+                'total': 0,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': 0,
+                'data': []
+            }
+
+    def _get_volume_container_mapping(self) -> Dict[str, int]:
+        """获取 Volume 到容器数量的映射"""
+        volume_map = {}
+        
+        try:
+            containers = self.client.containers.list(all=True)
+            for container in containers:
+                try:
+                    mounts = container.attrs.get('Mounts', [])
+                    for mount in mounts:
+                        if mount.get('Type') == 'volume':
+                            name = mount.get('Name', '')
+                            if name:
+                                volume_map[name] = volume_map.get(name, 0) + 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        
+        return volume_map
+
+    def _paginate_volumes(
+        self,
+        volumes: List[Dict[str, Any]],
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """对 Volume 列表进行分页和搜索处理"""
+        filtered_volumes = volumes
+        
+        if search:
+            search_lower = search.lower()
+            filtered_volumes = [
+                v for v in volumes
+                if (search_lower in v.get('name', '').lower() or
+                    search_lower in v.get('id', '').lower() or
+                    search_lower in v.get('driver', '').lower())
+            ]
+        
+        total = len(filtered_volumes)
+        total_pages = (total + page_size - 1) // page_size
+        
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        data = filtered_volumes[start_index:end_index]
+        
+        return {
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': total_pages,
+            'data': data
+        }
+
+    def _get_mock_volumes(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """返回模拟的 Volume 数据"""
+        import time
+        
+        mock_volumes = [
+            {
+                'id': 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+                'name': 'postgres-data',
+                'driver': 'local',
+                'mountpoint': '/var/lib/docker/volumes/postgres-data/_data',
+                'created': '2024-01-15T10:00:00Z',
+                'labels': {'project': 'logscope', 'service': 'database'},
+                'options': {},
+                'scope': 'local',
+                'container_count': 1,
+                'is_unused': False
+            },
+            {
+                'id': 'abcdef0987654321abcdef0987654321abcdef0987654321abcdef0987654321',
+                'name': 'redis-data',
+                'driver': 'local',
+                'mountpoint': '/var/lib/docker/volumes/redis-data/_data',
+                'created': '2024-01-10T08:00:00Z',
+                'labels': {'project': 'logscope'},
+                'options': {},
+                'scope': 'local',
+                'container_count': 1,
+                'is_unused': False
+            },
+            {
+                'id': 'abcdef1122334455abcdef1122334455abcdef1122334455abcdef1122334455',
+                'name': 'nginx-logs',
+                'driver': 'local',
+                'mountpoint': '/var/lib/docker/volumes/nginx-logs/_data',
+                'created': '2024-01-05T12:00:00Z',
+                'labels': {},
+                'options': {},
+                'scope': 'local',
+                'container_count': 0,
+                'is_unused': True
+            },
+            {
+                'id': 'abcdef5566778899abcdef5566778899abcdef5566778899abcdef5566778899',
+                'name': 'app-uploads',
+                'driver': 'local',
+                'mountpoint': '/var/lib/docker/volumes/app-uploads/_data',
+                'created': '2023-12-20T15:00:00Z',
+                'labels': {'project': 'old-project'},
+                'options': {},
+                'scope': 'local',
+                'container_count': 0,
+                'is_unused': True
+            }
+        ]
+        
+        return self._paginate_volumes(mock_volumes, page, page_size, search)
+
+    def get_volume_info(self, volume_name: str) -> Dict[str, Any]:
+        """获取 Volume 详情
+        
+        参数：
+        - volume_name: Volume 名称或 ID
+        
+        返回：
+        - Volume 详情信息
+        """
+        if not self.docker_available:
+            return self._get_mock_volume_info(volume_name)
+        
+        try:
+            volume = self.client.volumes.get(volume_name)
+        except docker.errors.NotFound:
+            from exceptions import VolumeNotFoundError
+            raise VolumeNotFoundError(f"Volume 不存在: {volume_name}")
+        except docker.errors.APIError as e:
+            log_service_error("get_volume_info", e, volume_name=volume_name)
+            raise DockerServiceError(f"获取 Volume 详情失败: {str(e)}")
+        
+        try:
+            attrs = volume.attrs
+            name = attrs.get('Name', '')
+            
+            volume_container_map = self._get_volume_container_mapping()
+            container_count = volume_container_map.get(name, 0)
+            
+            mounts_info = self._get_volume_mounts_info(name)
+            
+            return {
+                'id': attrs.get('Id', ''),
+                'name': name,
+                'driver': attrs.get('Driver', ''),
+                'mountpoint': attrs.get('Mountpoint', ''),
+                'created': attrs.get('CreatedAt', ''),
+                'labels': attrs.get('Labels', {}),
+                'options': attrs.get('Options', {}),
+                'scope': attrs.get('Scope', ''),
+                'status': attrs.get('Status', {}),
+                'container_count': container_count,
+                'is_unused': container_count == 0,
+                'mounts': mounts_info,
+                'raw_data': attrs
+            }
+        except Exception as e:
+            log_service_error("get_volume_info", e, volume_name=volume_name)
+            raise ContainerOperationError(f"获取 Volume 详情失败: {str(e)}")
+
+    def _get_volume_mounts_info(self, volume_name: str) -> List[Dict[str, Any]]:
+        """获取 Volume 的挂载信息"""
+        mounts_info = []
+        
+        try:
+            containers = self.client.containers.list(all=True)
+            for container in containers:
+                try:
+                    container_name = container.name.replace('/', '')
+                    container_status = container.status
+                    mounts = container.attrs.get('Mounts', [])
+                    
+                    for mount in mounts:
+                        if mount.get('Type') == 'volume' and mount.get('Name') == volume_name:
+                            mounts_info.append({
+                                'container_id': container.id,
+                                'container_name': container_name,
+                                'container_status': container_status,
+                                'destination': mount.get('Destination', ''),
+                                'mode': mount.get('Mode', ''),
+                                'rw': mount.get('RW', False)
+                            })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        
+        return mounts_info
+
+    def _get_mock_volume_info(self, volume_name: str) -> Dict[str, Any]:
+        """返回模拟的 Volume 详情"""
+        import time
+        
+        return {
+            'id': 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+            'name': volume_name,
+            'driver': 'local',
+            'mountpoint': f'/var/lib/docker/volumes/{volume_name}/_data',
+            'created': '2024-01-15T10:00:00Z',
+            'labels': {'project': 'logscope'},
+            'options': {},
+            'scope': 'local',
+            'status': {},
+            'container_count': 1,
+            'is_unused': False,
+            'mounts': [
+                {
+                    'container_id': 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890',
+                    'container_name': 'postgres',
+                    'container_status': 'running',
+                    'destination': '/var/lib/postgresql/data',
+                    'mode': 'rw',
+                    'rw': True
+                }
+            ],
+            'raw_data': {}
+        }
+
+    def create_volume(
+        self,
+        name: str,
+        driver: str = 'local',
+        options: Optional[Dict[str, str]] = None,
+        labels: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """创建 Volume
+        
+        参数：
+        - name: Volume 名称
+        - driver: 驱动类型
+        - options: 驱动选项
+        - labels: 标签
+        
+        返回：
+        - 创建的 Volume 信息
+        """
+        if not self.docker_available:
+            return self._get_mock_create_volume_result(name, driver)
+        
+        try:
+            app_logger.info(f"[Create Volume] 创建 Volume: {name}, driver={driver}")
+            
+            create_kwargs = {
+                'name': name,
+                'driver': driver
+            }
+            
+            if options:
+                create_kwargs['driver_opts'] = options
+            if labels:
+                create_kwargs['labels'] = labels
+            
+            volume = self.client.volumes.create(**create_kwargs)
+            
+            app_logger.info(f"[Create Volume] Volume 创建成功: {volume.name}")
+            
+            attrs = volume.attrs
+            
+            return {
+                'success': True,
+                'id': attrs.get('Id', ''),
+                'name': attrs.get('Name', ''),
+                'driver': attrs.get('Driver', ''),
+                'mountpoint': attrs.get('Mountpoint', ''),
+                'created': attrs.get('CreatedAt', ''),
+                'labels': attrs.get('Labels', {}),
+                'options': attrs.get('Options', {}),
+                'message': f"Volume 创建成功: {name}"
+            }
+        except docker.errors.APIError as e:
+            if 'volume name already exists' in str(e).lower():
+                from exceptions import VolumeAlreadyExistsError
+                raise VolumeAlreadyExistsError(f"Volume 已存在: {name}")
+            log_service_error("create_volume", e, name=name, driver=driver)
+            raise DockerServiceError(f"创建 Volume 失败: {str(e)}")
+        except Exception as e:
+            log_service_error("create_volume", e, name=name, driver=driver)
+            raise ContainerOperationError(f"创建 Volume 失败: {str(e)}")
+
+    def _get_mock_create_volume_result(self, name: str, driver: str) -> Dict[str, Any]:
+        """返回模拟的创建结果"""
+        import time
+        
+        return {
+            'success': True,
+            'id': f"sha256:{''.join(__import__('random').choices('0123456789abcdef', k=64))}",
+            'name': name,
+            'driver': driver,
+            'mountpoint': f'/var/lib/docker/volumes/{name}/_data',
+            'created': datetime.fromtimestamp(time.time()).isoformat() + 'Z',
+            'labels': {},
+            'options': {},
+            'message': f"Volume 创建成功: {name}"
+        }
+
+    def delete_volume(self, volume_name: str, force: bool = False) -> Dict[str, Any]:
+        """删除 Volume
+        
+        参数：
+        - volume_name: Volume 名称或 ID
+        - force: 是否强制删除（忽略使用中的错误）
+        
+        返回：
+        - success: 是否成功
+        - message: 消息
+        """
+        if not self.docker_available:
+            return self._get_mock_delete_volume_result(volume_name)
+        
+        try:
+            app_logger.info(f"[Delete Volume] 删除 Volume: {volume_name}, force={force}")
+            
+            volume = self.client.volumes.get(volume_name)
+            volume.remove(force=force)
+            
+            app_logger.info(f"[Delete Volume] Volume 删除成功: {volume_name}")
+            
+            return {
+                'success': True,
+                'message': f"Volume 删除成功: {volume_name}"
+            }
+        except docker.errors.NotFound:
+            from exceptions import VolumeNotFoundError
+            raise VolumeNotFoundError(f"Volume 不存在: {volume_name}")
+        except docker.errors.APIError as e:
+            if 'volume is in use' in str(e).lower():
+                from exceptions import VolumeInUseError
+                volume_container_map = self._get_volume_container_mapping()
+                container_count = volume_container_map.get(volume_name, 0)
+                raise VolumeInUseError(volume_name=volume_name, container_count=container_count)
+            log_service_error("delete_volume", e, volume_name=volume_name, force=force)
+            raise DockerServiceError(f"删除 Volume 失败: {str(e)}")
+        except Exception as e:
+            log_service_error("delete_volume", e, volume_name=volume_name, force=force)
+            raise ContainerOperationError(f"删除 Volume 失败: {str(e)}")
+
+    def _get_mock_delete_volume_result(self, volume_name: str) -> Dict[str, Any]:
+        """返回模拟的删除结果"""
+        return {
+            'success': True,
+            'message': f"Volume 删除成功: {volume_name}"
+        }
+
+    def list_bind_mounts(self) -> List[Dict[str, Any]]:
+        """获取所有 Bind Mounts 信息
+        
+        返回：
+        - Bind Mounts 列表
+        """
+        if not self.docker_available:
+            return self._get_mock_bind_mounts()
+        
+        try:
+            containers = self.client.containers.list(all=True)
+            bind_mounts = []
+            
+            for container in containers:
+                try:
+                    container_name = container.name.replace('/', '')
+                    container_status = container.status
+                    mounts = container.attrs.get('Mounts', [])
+                    
+                    for mount in mounts:
+                        if mount.get('Type') == 'bind':
+                            bind_mounts.append({
+                                'source': mount.get('Source', ''),
+                                'destination': mount.get('Destination', ''),
+                                'mode': mount.get('Mode', ''),
+                                'rw': mount.get('RW', False),
+                                'container_id': container.id,
+                                'container_name': container_name,
+                                'container_status': container_status
+                            })
+                except Exception as e:
+                    log_service_error("list_bind_mounts", e, container_id=container.id[:12] if container.id else 'unknown')
+            
+            return bind_mounts
+        except Exception as e:
+            log_service_error("list_bind_mounts", e)
+            raise ContainerOperationError(f"获取 Bind Mounts 失败: {str(e)}")
+
+    def _get_mock_bind_mounts(self) -> List[Dict[str, Any]]:
+        """返回模拟的 Bind Mounts 数据"""
+        return [
+            {
+                'source': '/host/app/config',
+                'destination': '/app/config',
+                'mode': 'ro',
+                'rw': False,
+                'container_id': 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890',
+                'container_name': 'web-app',
+                'container_status': 'running'
+            },
+            {
+                'source': '/host/data/logs',
+                'destination': '/var/log/app',
+                'mode': 'rw',
+                'rw': True,
+                'container_id': 'a1b2c3d4e5f6789012345678901234567890abcdef1234567890',
+                'container_name': 'web-app',
+                'container_status': 'running'
+            },
+            {
+                'source': '/host/data/backup',
+                'destination': '/backup',
+                'mode': 'rw',
+                'rw': True,
+                'container_id': 'f1e2d3c4b5a69788695041327958640213579864201357986',
+                'container_name': 'backup-service',
+                'container_status': 'exited'
+            }
+        ]
+
+    def get_storage_usage(self) -> Dict[str, Any]:
+        """获取存储使用分析
+        
+        返回：
+        - 存储使用统计信息
+        """
+        if not self.docker_available:
+            return self._get_mock_storage_usage()
+        
+        try:
+            volumes = self.client.volumes.list()
+            volume_container_map = self._get_volume_container_mapping()
+            
+            volume_stats = []
+            total_size = 0
+            used_size = 0
+            unused_volumes = 0
+            unused_size = 0
+            
+            for volume in volumes:
+                try:
+                    attrs = volume.attrs
+                    name = attrs.get('Name', '')
+                    mountpoint = attrs.get('Mountpoint', '')
+                    container_count = volume_container_map.get(name, 0)
+                    
+                    size, used = self._get_volume_size(mountpoint)
+                    total_size += size
+                    used_size += used
+                    
+                    is_unused = container_count == 0
+                    if is_unused:
+                        unused_volumes += 1
+                        unused_size += size
+                    
+                    volume_stats.append({
+                        'name': name,
+                        'size': size,
+                        'used_size': used,
+                        'container_count': container_count,
+                        'is_unused': is_unused,
+                        'mountpoint': mountpoint,
+                        'driver': attrs.get('Driver', ''),
+                        'created': attrs.get('CreatedAt', '')
+                    })
+                except Exception as e:
+                    log_service_error("get_storage_usage", e, volume_name=volume.name if hasattr(volume, 'name') else 'unknown')
+            
+            cleanup_suggestions = self._generate_cleanup_suggestions(volume_stats, volume_container_map)
+            
+            return {
+                'volumes': volume_stats,
+                'total_volumes': len(volume_stats),
+                'total_size': total_size,
+                'used_size': used_size,
+                'unused_volumes': unused_volumes,
+                'unused_size': unused_size,
+                'cleanup_suggestions': cleanup_suggestions
+            }
+        except Exception as e:
+            log_service_error("get_storage_usage", e)
+            raise ContainerOperationError(f"获取存储使用分析失败: {str(e)}")
+
+    def _get_volume_size(self, mountpoint: str) -> Tuple[int, int]:
+        """获取 Volume 的大小信息
+        
+        返回：
+        - (total_bytes, used_bytes)
+        """
+        import shutil
+        
+        try:
+            if os.path.exists(mountpoint):
+                total, used, _ = shutil.disk_usage(mountpoint)
+                return (total, used)
+        except Exception:
+            pass
+        
+        return (0, 0)
+
+    def _generate_cleanup_suggestions(
+        self,
+        volume_stats: List[Dict[str, Any]],
+        volume_container_map: Dict[str, int]
+    ) -> List[Dict[str, Any]]:
+        """生成存储清理建议"""
+        suggestions = []
+        
+        for volume in volume_stats:
+            if volume.get('is_unused', False):
+                suggestions.append({
+                    'type': 'unused_volume',
+                    'name': volume.get('name', ''),
+                    'size': volume.get('size', 0),
+                    'reason': 'Volume 未被任何容器使用',
+                    'risk_level': 'low'
+                })
+        
+        suggestions.sort(key=lambda x: x['size'], reverse=True)
+        
+        return suggestions
+
+    def _get_mock_storage_usage(self) -> Dict[str, Any]:
+        """返回模拟的存储使用分析"""
+        import time
+        
+        volumes = [
+            {
+                'name': 'postgres-data',
+                'size': 10737418240,
+                'used_size': 5368709120,
+                'container_count': 1,
+                'is_unused': False,
+                'mountpoint': '/var/lib/docker/volumes/postgres-data/_data',
+                'driver': 'local',
+                'created': '2024-01-15T10:00:00Z'
+            },
+            {
+                'name': 'redis-data',
+                'size': 2147483648,
+                'used_size': 536870912,
+                'container_count': 1,
+                'is_unused': False,
+                'mountpoint': '/var/lib/docker/volumes/redis-data/_data',
+                'driver': 'local',
+                'created': '2024-01-10T08:00:00Z'
+            },
+            {
+                'name': 'nginx-logs',
+                'size': 1073741824,
+                'used_size': 268435456,
+                'container_count': 0,
+                'is_unused': True,
+                'mountpoint': '/var/lib/docker/volumes/nginx-logs/_data',
+                'driver': 'local',
+                'created': '2024-01-05T12:00:00Z'
+            },
+            {
+                'name': 'app-uploads',
+                'size': 5368709120,
+                'used_size': 3221225472,
+                'container_count': 0,
+                'is_unused': True,
+                'mountpoint': '/var/lib/docker/volumes/app-uploads/_data',
+                'driver': 'local',
+                'created': '2023-12-20T15:00:00Z'
+            }
+        ]
+        
+        total_size = sum(v['size'] for v in volumes)
+        used_size = sum(v['used_size'] for v in volumes)
+        unused_volumes = len([v for v in volumes if v['is_unused']])
+        unused_size = sum(v['size'] for v in volumes if v['is_unused'])
+        
+        cleanup_suggestions = [
+            {
+                'type': 'unused_volume',
+                'name': 'app-uploads',
+                'size': 5368709120,
+                'reason': 'Volume 未被任何容器使用',
+                'risk_level': 'low'
+            },
+            {
+                'type': 'unused_volume',
+                'name': 'nginx-logs',
+                'size': 1073741824,
+                'reason': 'Volume 未被任何容器使用',
+                'risk_level': 'low'
+            }
+        ]
+        
+        return {
+            'volumes': volumes,
+            'total_volumes': len(volumes),
+            'total_size': total_size,
+            'used_size': used_size,
+            'unused_volumes': unused_volumes,
+            'unused_size': unused_size,
+            'cleanup_suggestions': cleanup_suggestions
+        }
+
+    def backup_volume(
+        self,
+        volume_name: str,
+        backup_path: Optional[str] = None,
+        compression: str = 'gzip'
+    ) -> Dict[str, Any]:
+        """备份 Volume
+        
+        参数：
+        - volume_name: Volume 名称
+        - backup_path: 备份文件路径
+        - compression: 压缩方式：gzip, tar, none
+        
+        返回：
+        - 备份结果
+        """
+        from exceptions import VolumeBackupError
+        
+        if not self.docker_available:
+            return self._get_mock_backup_result(volume_name, backup_path, compression)
+        
+        try:
+            app_logger.info(f"[Backup Volume] 备份 Volume: {volume_name}")
+            
+            volume_info = self.get_volume_info(volume_name)
+            mountpoint = volume_info.get('mountpoint', '')
+            
+            if not mountpoint or not os.path.exists(mountpoint):
+                raise VolumeBackupError(f"Volume 挂载点不存在或无法访问: {volume_name}")
+            
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            if not backup_path:
+                backup_dir = '/tmp/volume_backups'
+                os.makedirs(backup_dir, exist_ok=True)
+                
+                if compression == 'gzip':
+                    backup_path = os.path.join(backup_dir, f"{volume_name}_{timestamp}.tar.gz")
+                elif compression == 'tar':
+                    backup_path = os.path.join(backup_dir, f"{volume_name}_{timestamp}.tar")
+                else:
+                    backup_path = os.path.join(backup_dir, f"{volume_name}_{timestamp}")
+            
+            backup_size = self._perform_volume_backup(mountpoint, backup_path, compression)
+            
+            app_logger.info(f"[Backup Volume] Volume 备份成功: {backup_path}")
+            
+            return {
+                'success': True,
+                'volume_name': volume_name,
+                'backup_path': backup_path,
+                'backup_size': backup_size,
+                'message': f"Volume 备份成功: {backup_path}"
+            }
+        except VolumeBackupError:
+            raise
+        except Exception as e:
+            log_service_error("backup_volume", e, volume_name=volume_name)
+            raise VolumeBackupError(f"Volume 备份失败: {str(e)}")
+
+    def _perform_volume_backup(
+        self,
+        source_dir: str,
+        backup_path: str,
+        compression: str
+    ) -> int:
+        """执行 Volume 备份"""
+        import tarfile
+        import shutil
+        
+        if compression == 'gzip':
+            mode = 'w:gz'
+        elif compression == 'tar':
+            mode = 'w'
+        else:
+            shutil.copytree(source_dir, backup_path)
+            return self._get_dir_size(backup_path)
+        
+        with tarfile.open(backup_path, mode) as tar:
+            tar.add(source_dir, arcname='.')
+        
+        return os.path.getsize(backup_path)
+
+    def _get_dir_size(self, path: str) -> int:
+        """获取目录大小"""
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(path):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                total_size += os.path.getsize(filepath)
+        return total_size
+
+    def _get_mock_backup_result(
+        self,
+        volume_name: str,
+        backup_path: Optional[str],
+        compression: str
+    ) -> Dict[str, Any]:
+        """返回模拟的备份结果"""
+        import random
+        
+        if not backup_path:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            if compression == 'gzip':
+                backup_path = f"/tmp/volume_backups/{volume_name}_{timestamp}.tar.gz"
+            elif compression == 'tar':
+                backup_path = f"/tmp/volume_backups/{volume_name}_{timestamp}.tar"
+            else:
+                backup_path = f"/tmp/volume_backups/{volume_name}_{timestamp}"
+        
+        backup_size = random.randint(1000000, 100000000)
+        
+        return {
+            'success': True,
+            'volume_name': volume_name,
+            'backup_path': backup_path,
+            'backup_size': backup_size,
+            'message': f"Volume 备份成功: {backup_path}"
+        }
+
+    def restore_volume(
+        self,
+        backup_path: str,
+        volume_name: str
+    ) -> Dict[str, Any]:
+        """恢复 Volume
+        
+        参数：
+        - backup_path: 备份文件路径
+        - volume_name: 目标 Volume 名称
+        
+        返回：
+        - 恢复结果
+        """
+        from exceptions import VolumeRestoreError, VolumeAlreadyExistsError
+        
+        if not self.docker_available:
+            return self._get_mock_restore_result(backup_path, volume_name)
+        
+        try:
+            app_logger.info(f"[Restore Volume] 恢复 Volume: {volume_name} from {backup_path}")
+            
+            if not os.path.exists(backup_path):
+                raise VolumeRestoreError(f"备份文件不存在: {backup_path}")
+            
+            try:
+                existing_volume = self.client.volumes.get(volume_name)
+                if existing_volume:
+                    volume_container_map = self._get_volume_container_mapping()
+                    container_count = volume_container_map.get(volume_name, 0)
+                    if container_count > 0:
+                        raise VolumeRestoreError(f"目标 Volume 正在被 {container_count} 个容器使用，请先停止或删除这些容器")
+            except docker.errors.NotFound:
+                self.create_volume(volume_name)
+            
+            volume_info = self.get_volume_info(volume_name)
+            mountpoint = volume_info.get('mountpoint', '')
+            
+            if not mountpoint:
+                raise VolumeRestoreError(f"无法获取 Volume 挂载点: {volume_name}")
+            
+            self._perform_volume_restore(backup_path, mountpoint)
+            
+            app_logger.info(f"[Restore Volume] Volume 恢复成功: {volume_name}")
+            
+            return {
+                'success': True,
+                'volume_name': volume_name,
+                'message': f"Volume 恢复成功: {volume_name}"
+            }
+        except VolumeRestoreError:
+            raise
+        except VolumeAlreadyExistsError:
+            raise
+        except Exception as e:
+            log_service_error("restore_volume", e, backup_path=backup_path, volume_name=volume_name)
+            raise VolumeRestoreError(f"Volume 恢复失败: {str(e)}")
+
+    def _perform_volume_restore(
+        self,
+        backup_path: str,
+        target_dir: str
+    ):
+        """执行 Volume 恢复"""
+        import tarfile
+        import shutil
+        
+        if backup_path.endswith('.tar.gz') or backup_path.endswith('.tgz'):
+            mode = 'r:gz'
+        elif backup_path.endswith('.tar'):
+            mode = 'r'
+        else:
+            if os.path.isdir(backup_path):
+                for item in os.listdir(backup_path):
+                    s = os.path.join(backup_path, item)
+                    d = os.path.join(target_dir, item)
+                    if os.path.isdir(s):
+                        shutil.copytree(s, d, dirs_exist_ok=True)
+                    else:
+                        shutil.copy2(s, d)
+                return
+            else:
+                raise ValueError(f"不支持的备份格式: {backup_path}")
+        
+        with tarfile.open(backup_path, mode) as tar:
+            tar.extractall(path=target_dir)
+
+    def _get_mock_restore_result(
+        self,
+        backup_path: str,
+        volume_name: str
+    ) -> Dict[str, Any]:
+        """返回模拟的恢复结果"""
+        return {
+            'success': True,
+            'volume_name': volume_name,
+            'message': f"Volume 恢复成功: {volume_name}"
+        }
+
 
 import asyncio
 
@@ -3640,6 +4520,81 @@ class AsyncDockerService:
             network_id=network_id,
             container_id=container_id,
             force=force
+        )
+
+    async def list_volumes_async(
+        self,
+        page: int = 1,
+        page_size: int = 20,
+        search: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.list_volumes,
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+
+    async def get_volume_info_async(self, volume_name: str) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_volume_info,
+            volume_name
+        )
+
+    async def create_volume_async(
+        self,
+        name: str,
+        driver: str = 'local',
+        options: Optional[Dict[str, str]] = None,
+        labels: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.create_volume,
+            name=name,
+            driver=driver,
+            options=options,
+            labels=labels
+        )
+
+    async def delete_volume_async(self, volume_name: str, force: bool = False) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.delete_volume,
+            volume_name,
+            force=force
+        )
+
+    async def list_bind_mounts_async(self) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(
+            self._sync.list_bind_mounts
+        )
+
+    async def get_storage_usage_async(self) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.get_storage_usage
+        )
+
+    async def backup_volume_async(
+        self,
+        volume_name: str,
+        backup_path: Optional[str] = None,
+        compression: str = 'gzip'
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.backup_volume,
+            volume_name=volume_name,
+            backup_path=backup_path,
+            compression=compression
+        )
+
+    async def restore_volume_async(
+        self,
+        backup_path: str,
+        volume_name: str
+    ) -> Dict[str, Any]:
+        return await asyncio.to_thread(
+            self._sync.restore_volume,
+            backup_path=backup_path,
+            volume_name=volume_name
         )
 
 

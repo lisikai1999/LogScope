@@ -105,6 +105,18 @@
           </li>
 
           <li v-if="isAdmin" class="nav-item">
+            <router-link to="/storage" class="nav-link" :class="{ 'nav-link-active': $route.path === '/storage' }">
+              <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                <line x1="6" y1="18" x2="6.01" y2="18"></line>
+              </svg>
+              <span v-if="!isCollapsed" class="nav-text">存储管理</span>
+            </router-link>
+          </li>
+
+          <li v-if="isAdmin" class="nav-item">
             <router-link to="/hosts" class="nav-link" :class="{ 'nav-link-active': $route.path === '/hosts' }">
               <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>

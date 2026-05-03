@@ -825,4 +825,141 @@ class NetworkWithHost(NetworkBase):
     host_name: str = Field(..., description="主机名称")
 
 
+class VolumeDriver(str, Enum):
+    LOCAL = "local"
+
+
+class VolumeMount(BaseModel):
+    container_id: str = Field(..., description="容器 ID")
+    container_name: Optional[str] = Field(None, description="容器名称")
+    destination: str = Field(..., description="容器内挂载路径")
+    mode: str = Field(..., description="挂载模式")
+    rw: bool = Field(False, description="是否可读写")
+
+
+class VolumeBase(BaseModel):
+    id: str = Field(..., description="Volume ID")
+    name: str = Field(..., description="Volume 名称")
+    driver: str = Field(..., description="驱动类型")
+    created: Optional[str] = Field(None, description="创建时间")
+    labels: Optional[Dict[str, str]] = Field(None, description="标签")
+
+
+class VolumeResponse(VolumeBase):
+    mountpoint: Optional[str] = Field(None, description="挂载点路径")
+    options: Optional[Dict[str, str]] = Field(None, description="驱动选项")
+    scope: Optional[str] = Field(None, description="作用域")
+    status: Optional[Dict[str, Any]] = Field(None, description="状态信息")
+    container_count: int = Field(0, description="挂载的容器数量")
+    size: Optional[int] = Field(None, description="空间大小（字节）")
+    used_size: Optional[int] = Field(None, description="已使用空间（字节）")
+    is_unused: bool = Field(False, description="是否未使用")
+
+
+class VolumeDetailResponse(VolumeResponse):
+    mounts: List[VolumeMount] = Field(default_factory=list, description="挂载信息列表")
+    raw_data: Optional[Dict[str, Any]] = Field(None, description="原始数据")
+
+
+class VolumeListResponse(BaseModel):
+    volumes: List[VolumeResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class VolumeCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255, description="Volume 名称")
+    driver: VolumeDriver = Field(VolumeDriver.LOCAL, description="驱动类型")
+    options: Optional[Dict[str, str]] = Field(None, description="驱动选项")
+    labels: Optional[Dict[str, str]] = Field(None, description="标签")
+
+
+class VolumeDelete(BaseModel):
+    name: str = Field(..., description="Volume 名称")
+    force: bool = Field(False, description="是否强制删除")
+
+
+class VolumeBackupRequest(BaseModel):
+    volume_name: str = Field(..., description="要备份的 Volume 名称")
+    backup_path: Optional[str] = Field(None, description="备份文件路径")
+    compression: str = Field("gzip", description="压缩方式：gzip, tar, none")
+
+
+class VolumeRestoreRequest(BaseModel):
+    backup_path: str = Field(..., description="备份文件路径")
+    volume_name: str = Field(..., description="恢复的目标 Volume 名称")
+
+
+class VolumeBackupResponse(BaseModel):
+    success: bool
+    volume_name: str
+    backup_path: str
+    backup_size: int
+    message: str
+
+
+class VolumeRestoreResponse(BaseModel):
+    success: bool
+    volume_name: str
+    message: str
+
+
+class BindMountInfo(BaseModel):
+    source: str = Field(..., description="源路径（主机路径）")
+    destination: str = Field(..., description="目标路径（容器内路径）")
+    mode: str = Field(..., description="挂载模式")
+    rw: bool = Field(False, description="是否可读写")
+    container_id: str = Field(..., description="容器 ID")
+    container_name: Optional[str] = Field(None, description="容器名称")
+    container_status: Optional[str] = Field(None, description="容器状态")
+
+
+class BindMountListResponse(BaseModel):
+    mounts: List[BindMountInfo]
+    total: int
+
+
+class StorageUsageVolume(BaseModel):
+    name: str = Field(..., description="Volume 名称")
+    size: int = Field(0, description="总大小（字节）")
+    used_size: int = Field(0, description="已使用大小（字节）")
+    container_count: int = Field(0, description="挂载的容器数量")
+    is_unused: bool = Field(False, description="是否未使用")
+    mountpoint: Optional[str] = Field(None, description="挂载点路径")
+    driver: str = Field(..., description="驱动类型")
+    created: Optional[str] = Field(None, description="创建时间")
+
+
+class StorageUsageResponse(BaseModel):
+    volumes: List[StorageUsageVolume]
+    total_volumes: int
+    total_size: int
+    used_size: int
+    unused_volumes: int
+    unused_size: int
+    cleanup_suggestions: List[Dict[str, Any]]
+
+
+class CleanupSuggestion(BaseModel):
+    type: str = Field(..., description="建议类型：unused_volume, unused_image, etc.")
+    name: str = Field(..., description="资源名称")
+    size: int = Field(0, description="可释放空间大小")
+    reason: str = Field(..., description="清理原因")
+    risk_level: str = Field("low", description="风险等级：low, medium, high")
+
+
+class VolumeStats(BaseModel):
+    volume_name: str
+    mountpoint: str
+    total_bytes: int
+    available_bytes: int
+    used_bytes: int
+    used_percent: float
+    inode_total: Optional[int]
+    inode_used: Optional[int]
+    inode_free: Optional[int]
+
+
 

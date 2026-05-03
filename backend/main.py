@@ -107,7 +107,11 @@ from schemas import (
     NetworkCreate,
     NetworkConnect,
     NetworkDisconnect,
-    NetworkWithHost
+    NetworkWithHost,
+    VolumeDriver,
+    VolumeCreate,
+    VolumeBackupRequest,
+    VolumeRestoreRequest
 )
 from audit_service import (
     AuditService,
@@ -5165,6 +5169,293 @@ async def disconnect_container_from_network(
         raise
     except Exception as e:
         log_error("disconnect_container_from_network", e, network_id=network_id, container_id=disconnect_data.container_id)
+        raise
+
+
+@app.get("/api/volumes")
+async def list_volumes(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=1000, description="每页数量"),
+    search: Optional[str] = Query(None, description="搜索关键词（Volume 名称、ID）"),
+    request: Request = Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取 Volume 列表（需要登录）"""
+    try:
+        result = await async_docker_service.list_volumes_async(
+            page=page,
+            page_size=page_size,
+            search=search
+        )
+        
+        return {
+            "success": True,
+            "data": {
+                "volumes": result.get('data', []),
+                "total": result.get('total', 0),
+                "page": result.get('page', page),
+                "page_size": result.get('page_size', page_size),
+                "total_pages": result.get('total_pages', 0)
+            },
+            "message": "获取 Volume 列表成功"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("list_volumes", e, page=page, page_size=page_size, search=search)
+        raise
+
+
+@app.get("/api/volumes/{volume_name}")
+async def get_volume_info(
+    volume_name: str,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取 Volume 详情（管理员）"""
+    try:
+        result = await async_docker_service.get_volume_info_async(volume_name)
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": "获取 Volume 详情成功"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_volume_info", e, volume_name=volume_name)
+        raise
+
+
+@app.post("/api/volumes")
+async def create_volume(
+    volume_data: VolumeCreate,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """创建 Volume（管理员）"""
+    try:
+        result = await async_docker_service.create_volume_async(
+            name=volume_data.name,
+            driver=volume_data.driver.value,
+            options=volume_data.options,
+            labels=volume_data.labels
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.UPDATE_PERMISSION,
+            resource_type="volume",
+            resource_id=volume_data.name,
+            description=f"创建 Volume: {volume_data.name}",
+            details={
+                "name": volume_data.name,
+                "driver": volume_data.driver.value,
+                "options": volume_data.options,
+                "labels": volume_data.labels
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', 'Volume 创建成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("create_volume", e, name=volume_data.name, driver=volume_data.driver)
+        raise
+
+
+@app.delete("/api/volumes/{volume_name}")
+async def delete_volume(
+    volume_name: str,
+    force: bool = Query(False, description="是否强制删除（即使有容器使用）"),
+    request: Request = Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """删除 Volume（管理员）"""
+    try:
+        result = await async_docker_service.delete_volume_async(
+            volume_name,
+            force=force
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.UPDATE_PERMISSION,
+            resource_type="volume",
+            resource_id=volume_name,
+            description=f"删除 Volume: {volume_name}",
+            details={
+                "volume_name": volume_name,
+                "force": force
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', 'Volume 删除成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("delete_volume", e, volume_name=volume_name, force=force)
+        raise
+
+
+@app.get("/api/bind-mounts")
+async def list_bind_mounts(
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取 Bind Mounts 列表（管理员）"""
+    try:
+        result = await async_docker_service.list_bind_mounts_async()
+        
+        return {
+            "success": True,
+            "data": {
+                "mounts": result,
+                "total": len(result)
+            },
+            "message": "获取 Bind Mounts 列表成功"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("list_bind_mounts", e)
+        raise
+
+
+@app.get("/api/storage-usage")
+async def get_storage_usage(
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """获取存储使用分析（管理员）"""
+    try:
+        result = await async_docker_service.get_storage_usage_async()
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": "获取存储使用分析成功"
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("get_storage_usage", e)
+        raise
+
+
+@app.post("/api/volumes/{volume_name}/backup")
+async def backup_volume(
+    volume_name: str,
+    backup_data: VolumeBackupRequest,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """备份 Volume（管理员）"""
+    try:
+        result = await async_docker_service.backup_volume_async(
+            volume_name=volume_name,
+            backup_path=backup_data.backup_path,
+            compression=backup_data.compression
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.UPDATE_PERMISSION,
+            resource_type="volume",
+            resource_id=volume_name,
+            description=f"备份 Volume: {volume_name}",
+            details={
+                "volume_name": volume_name,
+                "backup_path": result.get('backup_path'),
+                "backup_size": result.get('backup_size'),
+                "compression": backup_data.compression
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', 'Volume 备份成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("backup_volume", e, volume_name=volume_name)
+        raise
+
+
+@app.post("/api/volumes/{volume_name}/restore")
+async def restore_volume(
+    volume_name: str,
+    restore_data: VolumeRestoreRequest,
+    request: Request,
+    current_admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """恢复 Volume（管理员）"""
+    try:
+        result = await async_docker_service.restore_volume_async(
+            backup_path=restore_data.backup_path,
+            volume_name=volume_name
+        )
+        
+        audit_service = AuditService(db)
+        await audit_service.log_action(
+            user_id=current_admin.id,
+            username=current_admin.username,
+            action=AuditAction.UPDATE_PERMISSION,
+            resource_type="volume",
+            resource_id=volume_name,
+            description=f"恢复 Volume: {volume_name}",
+            details={
+                "volume_name": volume_name,
+                "backup_path": restore_data.backup_path
+            },
+            ip_address=get_client_ip(request),
+            user_agent=get_user_agent(request),
+            status="success"
+        )
+        
+        return {
+            "success": True,
+            "data": result,
+            "message": result.get('message', 'Volume 恢复成功')
+        }
+    except AppException:
+        raise
+    except Exception as e:
+        log_error("restore_volume", e, volume_name=volume_name, backup_path=restore_data.backup_path)
         raise
 
 

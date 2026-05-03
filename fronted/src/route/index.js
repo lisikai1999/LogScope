@@ -12,6 +12,7 @@ import RegistryManagement from '../views/RegistryManagement.vue'
 import ImageScan from '../views/ImageScan.vue'
 import ImageBuild from '../views/ImageBuild.vue'
 import NetworkManagement from '../views/NetworkManagement.vue'
+import StorageManagement from '../views/StorageManagement.vue'
 
 
 const routes = [
@@ -91,6 +92,12 @@ const routes = [
     path: '/networks',
     name: 'NetworkManagement',
     component: NetworkManagement,
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/storage',
+    name: 'StorageManagement',
+    component: StorageManagement,
     meta: { requiresAuth: true, requiresAdmin: true }
   }
 ]

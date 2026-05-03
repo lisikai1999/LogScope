@@ -475,6 +475,44 @@ const networkApi = {
 }
 
 
+const volumeApi = {
+  async getVolumes(params = {}) {
+    return get('/api/volumes', params)
+  },
+  
+  async getVolumeInfo(volumeName) {
+    return get(`/api/volumes/${encodeURIComponent(volumeName)}`)
+  },
+  
+  async createVolume(data) {
+    return post('/api/volumes', data)
+  },
+  
+  async deleteVolume(volumeName, params = {}) {
+    return del(`/api/volumes/${encodeURIComponent(volumeName)}`, params)
+  },
+  
+  async backupVolume(volumeName, data = {}) {
+    return post(`/api/volumes/${encodeURIComponent(volumeName)}/backup`, data)
+  },
+  
+  async restoreVolume(volumeName, data) {
+    return post(`/api/volumes/${encodeURIComponent(volumeName)}/restore`, data)
+  }
+}
+
+
+const storageApi = {
+  async getBindMounts() {
+    return get('/api/bind-mounts')
+  },
+  
+  async getStorageUsage() {
+    return get('/api/storage-usage')
+  }
+}
+
+
 export {
   globalLoading,
   getErrorMessage,
@@ -495,7 +533,9 @@ export {
   hostApi,
   scanApi,
   buildApi,
-  networkApi
+  networkApi,
+  volumeApi,
+  storageApi
 }
 
 export default {
@@ -516,5 +556,7 @@ export default {
   hostApi,
   scanApi,
   buildApi,
-  networkApi
+  networkApi,
+  volumeApi,
+  storageApi
 }
