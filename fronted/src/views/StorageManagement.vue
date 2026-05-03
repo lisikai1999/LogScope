@@ -192,6 +192,17 @@
                       备份
                     </button>
                     <button 
+                      class="btn btn-ghost btn-sm action-btn"
+                      @click="openRestoreModal(volume)"
+                      title="恢复 Volume 备份"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="1 4 1 10 7 10"></polyline>
+                        <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path>
+                      </svg>
+                      恢复
+                    </button>
+                    <button 
                       class="btn btn-ghost btn-sm action-btn action-btn-danger"
                       @click="confirmDeleteVolume(volume)"
                       title="删除 Volume"
@@ -683,8 +694,11 @@
               </div>
             </div>
             <div class="modal-footer">
-              <button type="button" class="btn btn-primary" @click="closeBackupModal">
+              <button type="button" class="btn btn-outline" @click="closeBackupModal">
                 确定
+              </button>
+              <button type="button" class="btn btn-primary" @click="openRestoreModalFromBackup">
+                恢复此备份
               </button>
             </div>
           </div>
@@ -726,6 +740,84 @@
                 </button>
                 <button type="submit" class="btn btn-primary" :disabled="backupLoading">
                   {{ backupLoading ? '备份中...' : '开始备份' }}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showRestoreModal" class="modal-overlay" @click.self="closeRestoreModal">
+      <div class="modal modal-medium">
+        <div class="modal-header">
+          <h3 class="modal-title">恢复 Volume</h3>
+          <button class="modal-close" @click="closeRestoreModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div v-if="restoreError" class="form-error">{{ restoreError }}</div>
+          <div v-else-if="restoreResult" class="backup-success">
+            <div class="success-icon">✅</div>
+            <p>恢复成功！</p>
+            <div class="backup-info">
+              <div class="backup-info-item">
+                <span class="backup-info-label">Volume:</span>
+                <span class="backup-info-value">{{ restoreResult.volume_name }}</span>
+              </div>
+              <div class="backup-info-item">
+                <span class="backup-info-label">备份路径:</span>
+                <span class="backup-info-value">{{ restoreForm.backup_path }}</span>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-primary" @click="closeRestoreModal">
+                确定
+              </button>
+            </div>
+          </div>
+          <div v-else>
+            <div class="backup-info-preview">
+              <p>即将恢复备份到 Volume:</p>
+              <strong>{{ restoreVolume?.name || restoreVolumeName }}</strong>
+            </div>
+            
+            <form @submit.prevent="handleRestoreVolume">
+              <div class="form-group">
+                <label class="form-label">备份文件路径 <span class="required">*</span></label>
+                <input 
+                  type="text" 
+                  v-model="restoreForm.backup_path" 
+                  class="form-input"
+                  placeholder="例如: /tmp/volume_backups/my-volume-20260101.tar.gz"
+                  :disabled="restoreLoading"
+                  required
+                />
+                <p class="form-hint">请输入备份文件的完整路径</p>
+              </div>
+              
+              <div class="form-group">
+                <label class="form-label">目标 Volume 名称</label>
+                <input 
+                  type="text" 
+                  v-model="restoreForm.target_name" 
+                  class="form-input"
+                  placeholder="留空则恢复到原 Volume"
+                  :disabled="restoreLoading"
+                />
+                <p class="form-hint">留空则恢复到原 Volume（将覆盖现有数据）</p>
+              </div>
+              
+              <div class="modal-footer">
+                <button type="button" class="btn btn-outline" @click="closeRestoreModal" :disabled="restoreLoading">
+                  取消
+                </button>
+                <button type="submit" class="btn btn-primary" :disabled="restoreLoading || !restoreForm.backup_path">
+                  {{ restoreLoading ? '恢复中...' : '开始恢复' }}
                 </button>
               </div>
             </form>
@@ -829,6 +921,17 @@ const backupResult = ref(null)
 const backupForm = ref({
   compression: 'gzip',
   backup_path: ''
+})
+
+const showRestoreModal = ref(false)
+const restoreVolume = ref(null)
+const restoreVolumeName = ref('')
+const restoreLoading = ref(false)
+const restoreError = ref('')
+const restoreResult = ref(null)
+const restoreForm = ref({
+  backup_path: '',
+  target_name: ''
 })
 
 const showDeleteConfirm = ref(false)
@@ -1066,6 +1169,75 @@ const handleBackupVolume = async () => {
     backupError.value = err.message || '备份失败'
   } finally {
     backupLoading.value = false
+  }
+}
+
+const openRestoreModal = (volume) => {
+  restoreVolume.value = volume
+  restoreVolumeName.value = volume?.name || ''
+  restoreForm.value = {
+    backup_path: '',
+    target_name: volume?.name || ''
+  }
+  restoreError.value = ''
+  restoreResult.value = null
+  showRestoreModal.value = true
+}
+
+const openRestoreModalFromBackup = () => {
+  closeBackupModal()
+  restoreVolume.value = backupVolume.value
+  restoreVolumeName.value = backupResult.value?.volume_name || backupVolume.value?.name || ''
+  restoreForm.value = {
+    backup_path: backupResult.value?.backup_path || '',
+    target_name: backupResult.value?.volume_name || backupVolume.value?.name || ''
+  }
+  restoreError.value = ''
+  restoreResult.value = null
+  showRestoreModal.value = true
+}
+
+const closeRestoreModal = () => {
+  showRestoreModal.value = false
+  restoreVolume.value = null
+  restoreVolumeName.value = ''
+  restoreForm.value = {
+    backup_path: '',
+    target_name: ''
+  }
+  restoreError.value = ''
+  restoreResult.value = null
+}
+
+const handleRestoreVolume = async () => {
+  if (!restoreForm.value.backup_path) {
+    restoreError.value = '请输入备份文件路径'
+    return
+  }
+  
+  try {
+    restoreLoading.value = true
+    restoreError.value = ''
+    
+    const data = {
+      backup_path: restoreForm.value.backup_path
+    }
+    
+    const targetVolumeName = restoreForm.value.target_name || restoreVolumeName.value
+    
+    const result = await volumeApi.restoreVolume(targetVolumeName, data)
+    
+    if (result.success) {
+      restoreResult.value = result.data
+      showToast('Volume 恢复成功', 'success')
+      fetchVolumes()
+    } else {
+      restoreError.value = result.message || '恢复失败'
+    }
+  } catch (err) {
+    restoreError.value = err.message || '恢复失败'
+  } finally {
+    restoreLoading.value = false
   }
 }
 
